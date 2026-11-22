@@ -242,6 +242,39 @@ export async function processTable(platform = process.platform) {
   return parseProcessTable(await run('ps', ['-A', '-o', 'pid=,ppid=']));
 }
 
+/* ------------------------------------------------------------ gateways ------- */
+
+const outboundRow = (c) => c && c.pid != null && !isLoopbackAddress(c.ip) && !isUnspecifiedAddress(c.ip) &&
+  ((c.protocol ?? 'tcp') === 'tcp' ? !['listen', 'closed'].includes(c.state) : c.port === 443);
+const connKey = (c) => `${c.pid}|${c.protocol ?? 'tcp'}|${c.ip}|${c.port}`;
+
+/**
+ * Follow a CLI that hands its traffic to a local gateway (e.g. hermes -> 127.0.0.1:34101).
+ * For each loopback port the CLI's tree connected to, find the process listening on it
+ * (never our own proxy) and report that process's outbound connections: those opened
+ * during the run window (new) and those already open before it (pooled keep-alives the
+ * gateway may have reused). Pure, so tests can drive it on any OS.
+ */
+export function followGateways({ loopbackPorts = [], listeners = [], outside = [], baseline = new Set(), table = [], tree = new Set(), selfPid = process.pid }) {
+  const out = [];
+  for (const port of loopbackPorts) {
+    const l = listeners.find((x) => x.localPort === port && x.pid != null && x.pid !== selfPid && !tree.has(x.pid) &&
+      (isLoopbackAddress(x.localIp) || isUnspecifiedAddress(x.localIp)));
+    if (!l) continue;
+    const family = descendants(table, l.pid);
+    const mine = outside.filter((c) => family.has(c.pid));
+    const shape = (c) => ({ ip: c.ip, port: c.port, protocol: c.protocol ?? 'tcp', pid: c.pid, ...(c.firstSeen ? { firstSeen: c.firstSeen } : {}) });
+    out.push({
+      port,
+      pid: l.pid,
+      process: l.process ?? null,
+      newConnections: mine.filter((c) => !baseline.has(connKey(c))).map(shape),
+      preexisting: mine.filter((c) => baseline.has(connKey(c))).map(shape),
+    });
+  }
+  return out;
+}
+
 /* ---------------------------------------------------------------- runner ----- */
 
 const PROMPT = 'Reply with exactly: OK';
@@ -311,6 +344,9 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
       HTTPS_PROXY: proxyUrl, HTTP_PROXY: proxyUrl, https_proxy: proxyUrl, http_proxy: proxyUrl,
       NODE_USE_ENV_PROXY: '1', NO_PROXY: '', no_proxy: '',
     };
+    // Outbound connections already open before the CLI starts: lets a followed gateway's
+    // new connections be told apart from its pooled keep-alives.
+    const baseline = new Set((await socketSnapshot(platform).catch(() => [])).filter(outboundRow).map(connKey));
     const win = platform === 'win32';
     const child = spawn(win ? argv.map(quoteWin).join(' ') : argv[0], win ? [] : argv.slice(1), {
       cwd, env, shell: win, detached: !win, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
@@ -321,13 +357,25 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
     child.stderr.on('data', (d) => { if (stderr.length < 4000) stderr += d; });
 
     const mib = new ConnectionMib();
+    const listeners = new Map();
+    const outside = new Map();
+    let lastTable = [];
+    let lastTree = new Set();
     let polling = true;
     const poll = (async () => {
       while (polling) {
         const [table, conns] = await Promise.all([processTable(platform), socketSnapshot(platform)]);
         const tree = descendants(table, child.pid);
+        lastTable = table;
+        for (const p of tree) lastTree.add(p);
         const treeConns = conns.filter((c) => c.pid != null && tree.has(c.pid));
         mib.ingest(treeConns, { now: new Date().toISOString(), markMissingClosed: true });
+        // Candidates for gateway following: every listener, and outbound rows of processes
+        // outside the CLI's tree (filtered to the gateway's family after the run).
+        for (const c of conns) {
+          if (c.state === 'listen' && c.pid != null) listeners.set(`${c.pid}|${c.localPort}`, c);
+          else if (outboundRow(c) && !tree.has(c.pid) && !outside.has(connKey(c))) outside.set(connKey(c), { ...c, firstSeen: new Date().toISOString() });
+        }
         await new Promise((r) => setTimeout(r, pollMs));
       }
     })();
@@ -346,7 +394,14 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
     await proxy.close();
 
     const traced = strace && existsSync(straceOut) ? parseStrace(readFileSync(straceOut, 'utf8')) : null;
+    const treeSockets = mib.remoteEndpoints({ includeLoopback: true });
+    const loopbackPorts = [...new Set([...(traced?.connects ?? []), ...treeSockets]
+      .filter((c) => isLoopbackAddress(c.ip) && c.port !== 53 && c.port !== proxy.port).map((c) => c.port))];
+    const gateways = followGateways({
+      loopbackPorts, listeners: [...listeners.values()], outside: [...outside.values()], baseline, table: lastTable, tree: lastTree,
+    });
     return summarize({
+      gateways,
       lane,
       cmd,
       platform,
@@ -356,7 +411,7 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
       stdout,
       stderr,
       tunnels: proxy.tunnels,
-      sockets: mib.remoteEndpoints({ includeLoopback: true }),
+      sockets: treeSockets,
       mib: mib.snapshot(),
       traced,
     });
@@ -366,7 +421,7 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
 }
 
 /** Merge the layers into one evidence record. Pure, so the test can drive it. */
-export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, stdout = '', stderr = '', tunnels = [], sockets = [], mib = null, traced = null }) {
+export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, stdout = '', stderr = '', tunnels = [], sockets = [], mib = null, traced = null, gateways = [] }) {
   const hosts = new Map();
   const touch = (host, port, via, extra = {}) => {
     if (!host || isLoopback(host)) return;
@@ -406,7 +461,19 @@ export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, 
       unnamed.set(key, entry);
     }
   }
+  // A followed gateway's connections opened during the run are this CLI's traffic as far as
+  // the socket table can tell (a busy gateway may also be serving other clients).
+  const viaGateway = new Map();
+  for (const g of gateways) {
+    for (const c of g.newConnections) {
+      const normIp = parseAddress(c.ip)?.normalized ?? c.ip;
+      if (named.has(normIp)) continue;
+      viaGateway.set(`${c.protocol}:${normIp}:${c.port}`, { ip: normIp, port: c.port, protocol: c.protocol, via: `gateway:${g.pid}` });
+    }
+  }
+  for (const [k, v] of viaGateway) if (!unnamed.has(k)) unnamed.set(k, v);
   const hostList = [...hosts.values()].sort((a, b) => b.down + b.up - (a.down + a.up));
+  const ownUnnamed = [...unnamed.values()].some((u) => !String(u.via).startsWith('gateway:'));
   const mibCount = (mib?.summary?.tcpConnections ?? 0) + (mib?.summary?.udpEndpoints ?? 0);
   const layers = { proxy: tunnels.length > 0, sockets: sockets.length > 0 || mibCount > 0, strace: traced ? true : null };
   const result = {
@@ -423,7 +490,9 @@ export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, 
     unnamedConnections: [...unnamed.values()],
     dnsQuestions: [...new Set((traced?.dns ?? []).map((d) => d.name))],
     loopbackPorts: loopbackOnly,
-    verdict: hostList.length ? 'OBSERVED' : unnamed.size ? 'OBSERVED_IP_ONLY' : loopbackOnly.length ? 'LOCAL_GATEWAY' : 'NOT_OBSERVED',
+    gateways,
+    verdict: hostList.length ? 'OBSERVED' : ownUnnamed ? 'OBSERVED_IP_ONLY' : viaGateway.size ? 'OBSERVED_VIA_GATEWAY'
+      : loopbackOnly.length ? 'LOCAL_GATEWAY' : 'NOT_OBSERVED',
     plane: 'CONTROL',
     note: 'Observed hosts are where the CLI connects (control plane, ending at the TLS edge). They are not the inference origin.',
     output: { stdout: stdout.slice(0, 400), stderr: stderr.slice(0, 400) },

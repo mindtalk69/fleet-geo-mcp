@@ -60,7 +60,8 @@ and never needs root or admin rights:
 |---|---|---|---|
 | all lookup tools (`locate_model`, `fleet_status`, ...) | yes | yes | yes |
 | `observe_endpoints` proxy layer | yes | yes | yes |
-| `observe_endpoints` socket table | `netstat -ano` + PowerShell process tree | `lsof` + `ps` | `ss` + `ps` |
+| `observe_endpoints` / `inspect_connections` socket MIB (native Rust) | `GetExtendedTcpTable` / `GetExtendedUdpTable` + Toolhelp32 | `libproc` | `/proc/net/*` + `/proc/<pid>` |
+| `observe_endpoints` / `inspect_connections` socket MIB (JS fallback) | `netstat -ano` + PowerShell process tree | `lsof` + `ps` | `ss -tnupHa` + `ps` |
 | `observe_endpoints` SNI/DNS names | via the proxy | via the proxy | proxy + `strace` (if installed) |
 | CLI shims (`codex.cmd` etc.) | run through the shell | direct | direct |
 | process cleanup on timeout | `taskkill /T /F` | process group | process group |
@@ -108,7 +109,7 @@ for jev). With `run:true` the tool runs that one prompt and watches it through t
 | Layer | Linux | macOS | Windows | Sees |
 |---|---|---|---|---|
 | logging CONNECT proxy (`HTTPS_PROXY`) | yes | yes | yes | hostname, port, bytes per tunnel |
-| OS socket table for the process tree | `ss` | `lsof` | `netstat -ano` | every remote IP, proxy or not |
+| RFC 1792 dual-stack TCP/UDP socket MIB | Rust `/proc/net` (fallback `ss -tnupHa`) | Rust `libproc` (fallback `lsof`) | Rust IP Helper API (fallback `netstat -ano`) | every IPv4/IPv6 remote TCP (all states) & UDP endpoint + listeners |
 | `strace -yy`, when installed | yes | - | - | TLS SNI hostname, DNS questions, every connect |
 
 Nothing is decrypted: the hostname comes from the CONNECT line, the cleartext SNI or the
@@ -119,6 +120,29 @@ the commands, because each lane costs one model call. `relocate:true` re-classif
 IPs of each lane's latest saved run without running any CLI (no model calls); the original
 file is kept and a `-relocated.json` file is added. agent2mind reads these files to show
 which hosts each agent really calls.
+
+**Gateway follow.** Some CLIs never leave the machine themselves: `hermes` hands each
+request to its own daemon on `127.0.0.1:34101`. When a CLI connects to a loopback port,
+the tool finds the process listening there (never its own proxy) and records that
+process's outbound connections, split into `newConnections` (opened during the run) and
+`preexisting` (pooled keep-alives open before it). New connections become this lane's
+evidence (`OBSERVED_VIA_GATEWAY`, via `gateway:<pid>`); pooled ones are listed and labelled
+but never counted as proof. A busy gateway may also be serving other clients, so treat
+its new connections as a strong hint, not exclusive attribution. Works on every OS through
+the same socket table (native core, `ss`, `lsof` or `netstat`).
+
+### inspect_connections
+
+A passive, zero-model-call snapshot of the host's live dual-stack TCP and UDP sockets,
+modelled on **RFC 1792**'s four-table MIB:
+
+- `tcpConnTable`: active TCP 4-tuples (`synSent` through `timeWait`), with transient state tracking
+- `tcpUnspecConnTable` / `tcpListeners`: wildcard (`0.0.0.0`, `::`) and bound TCP listeners kept separate from active remotes
+- `udpTable` / `udpUnspecTable`: connected UDP flows (e.g., QUIC/HTTP3 on UDP/443, DNS) and wildcard UDP listeners
+
+Accepts optional `pid` (includes descendant process tree), `process`, `protocol` (`tcp`/`udp`/`all`),
+`family` (`ipv4`/`ipv6`/`all`), and `locate:true` to enrich remote IPv4/IPv6 endpoints with ASN,
+published cloud region, and `EDGE`/`ENDPOINT` plane labels. Reports `runtime.engine` (`rust-napi` or `js-fallback`).
 
 ## The answer shape
 
@@ -205,15 +229,19 @@ the model, and what their documentation claims.
    still yields neither ASN nor cloud-prefix data, `observe_endpoints` labels it `UNKNOWN` rather
    than presuming it is a unicast endpoint.
 5. `observe_endpoints` sees where a CLI connects, which ends at the TLS edge. A CLI that
-   hands traffic to a local gateway outside its process tree is reported as `LOCAL_GATEWAY`
-   with the loopback ports, not as a location.
+   hands traffic to a local gateway outside its process tree is followed to that gateway;
+   if the gateway opens nothing new during the run, the lane stays `LOCAL_GATEWAY` with the
+   gateway named, not a location.
 
 ## Develop
 
 ```powershell
 cd C:\DEV\fleet-geo-mcp
-node server.mjs --selftest        # 41 checks; offline strict, network tolerant
-node test/observe.test.mjs        # 12 observe_endpoints checks (or: npm test for all suites)
+npm test                          # selftest (44) + tcpip (8) + observe (12) + native (7)
+npm run build:native              # optional: build Rust N-API core (native/*.node)
+FLEET_GEO_NATIVE=0 npm test       # verify pure-JS fallback without native addon
+node server.mjs --tool inspect_connections --args '{"locate":false}'
+node server.mjs --tool lookup_prefix --args '{"ip":"2607:6bc0::10"}'
 node server.mjs --tool observe_endpoints --args '{"lane":"all"}'                 # plan only
 node server.mjs --tool observe_endpoints --args '{"lane":"W7","run":true}'       # one model call
 node server.mjs --tool observe_endpoints --args '{"lane":"all","relocate":true}' # re-classify, no model calls

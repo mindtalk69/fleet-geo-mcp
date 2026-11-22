@@ -529,6 +529,8 @@ async function classifyObservation(r) {
     };
   }
   for (const u of r.unnamedConnections ?? []) Object.assign(u, await ipCard(u.ip));
+  // A followed gateway's pooled keep-alives may carry this run's request too: label them.
+  for (const g of r.gateways ?? []) for (const c of g.preexisting ?? []) Object.assign(c, await ipCard(c.ip));
   return r;
 }
 

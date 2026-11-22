@@ -11,6 +11,7 @@ import {
   parseProcessTable, parseSs, parseStrace, startProxy, summarize,
 } from '../src/observe.mjs';
 import { EDGE_ASNS } from '../src/geo.mjs';
+import { followGateways } from '../src/observe.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -167,6 +168,38 @@ await t('observeLane end to end: a child that honours HTTPS_PROXY is observed', 
   assert.equal(r.honoredProxy, true);
   assert.equal(r.hosts[0]?.host, 'probe.invalid');
   assert.deepEqual(r.hosts[0].via, ['proxy-connect']);
+});
+
+await t('gateway follow: listener on the loopback port, new vs pooled connections, own proxy ignored', async () => {
+  const listeners = [
+    { state: 'listen', localIp: '127.0.0.1', localPort: 34101, pid: 1700, process: 'hermes' },
+    { state: 'listen', localIp: '127.0.0.1', localPort: 40000, pid: 4242, process: 'node' }, // our proxy
+  ];
+  const outside = [
+    { pid: 1700, protocol: 'tcp', state: 'established', ip: '2606:4700:10::ac42:98ae', port: 443 },
+    { pid: 1801, protocol: 'tcp', state: 'established', ip: '160.79.104.10', port: 443, firstSeen: 'T1' }, // gateway worker
+    { pid: 9999, protocol: 'tcp', state: 'established', ip: '8.8.8.8', port: 443 }, // unrelated process
+  ];
+  const baseline = new Set(['1700|tcp|2606:4700:10::ac42:98ae|443']);
+  const table = [{ pid: 1700, ppid: 1 }, { pid: 1801, ppid: 1700 }, { pid: 9999, ppid: 1 }];
+  const g = followGateways({ loopbackPorts: [34101, 40000], listeners, outside, baseline, table, selfPid: 4242 });
+  assert.equal(g.length, 1, 'own proxy must not be followed');
+  assert.equal(g[0].pid, 1700);
+  assert.equal(g[0].process, 'hermes');
+  assert.deepEqual(g[0].newConnections.map((c) => [c.pid, c.ip]), [[1801, '160.79.104.10']]);
+  assert.deepEqual(g[0].preexisting.map((c) => c.ip), ['2606:4700:10::ac42:98ae']);
+});
+
+await t('gateway follow: verdict and merge into unnamed connections', async () => {
+  const base = { lane: { lane: 'B', cli: 'hermes' }, cmd: { argv: ['hermes'] }, platform: 'linux', exitCode: 0, timedOut: false,
+    sockets: [{ ip: '127.0.0.1', port: 34101, pid: 5 }] };
+  const gw = { port: 34101, pid: 1700, process: 'hermes', newConnections: [{ ip: '160.79.104.10', port: 443, protocol: 'tcp', pid: 1801 }], preexisting: [] };
+  const via = summarize({ ...base, gateways: [gw] });
+  assert.equal(via.verdict, 'OBSERVED_VIA_GATEWAY');
+  assert.deepEqual(via.unnamedConnections.map((u) => [u.ip, u.via]), [['160.79.104.10', 'gateway:1700']]);
+  const pooled = summarize({ ...base, gateways: [{ ...gw, newConnections: [], preexisting: [{ ip: '1.2.3.4', port: 443, protocol: 'tcp', pid: 1700 }] }] });
+  assert.equal(pooled.verdict, 'LOCAL_GATEWAY', 'pooled keep-alives alone are not proof of this run');
+  assert.equal(pooled.gateways[0].preexisting.length, 1);
 });
 
 await t('measured anycast front ends (Anthropic, Meta) are edges, never endpoints', async () => {
