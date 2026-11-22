@@ -1,6 +1,6 @@
 // Evidence assembly and confidence. This is the part that must never lie:
 // the tool returns what was observed, which plane it belongs to, and how sure it is.
-import { EDGE_ASNS, REGION_COUNTRY, coordsFor, fingerprintHost, haversineKm, regionFromHostname, round, rttFloorMs, rttViolates } from './geo.mjs';
+import { EDGE_ASNS, REGION_COUNTRY, coordsFor, fingerprintHost, haversineKm, jurisdictionFromHostname, regionFromHostname, round, rttFloorMs, rttViolates } from './geo.mjs';
 
 const TIER_WEIGHT = { A: 4, B: 3, C: 2, D: 1 };
 const ORDER = ['OPEN', 'INDICATED', 'CORROBORATED', 'ANCHORED'];
@@ -143,21 +143,37 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
     }
   }
 
-  // A region encoded in the operator's own hostname is a deliberate disclosure.
+  // A region or jurisdiction encoded in the operator's own hostname is a deliberate disclosure.
   const hostCandidates = [control.host, chain?.finalHost, ...(chain?.hops ?? []).map((h) => h.to)].filter(Boolean);
   for (const cand of hostCandidates) {
     const hr = regionFromHostname(cand);
-    if (!hr) continue;
-    add('A', 'hostname convention', `${cand} encodes region ${hr}`, {
-      region: hr,
-      country: REGION_COUNTRY[hr] ?? null,
-      plane: 'origin',
-      anchor: 'region-encoded-hostname',
-    });
-    origin.region = hr;
-    origin.country = REGION_COUNTRY[hr] ?? origin.country;
-    origin.precision = 'region';
-    break;
+    if (hr) {
+      add('A', 'hostname convention', `${cand} encodes region ${hr}`, {
+        region: hr,
+        country: REGION_COUNTRY[hr] ?? null,
+        plane: 'origin',
+        anchor: 'region-encoded-hostname',
+      });
+      origin.region = hr;
+      origin.country = REGION_COUNTRY[hr] ?? origin.country;
+      origin.precision = 'region';
+      break;
+    }
+    const jh = jurisdictionFromHostname(cand);
+    if (jh) {
+      add('A', jh.source, `${cand} is a documented in-region gateway (${jh.operator})`, {
+        region: jh.region,
+        country: jh.country,
+        plane: 'origin',
+        anchor: 'regional-gateway-hostname',
+      });
+      origin.region = jh.region ?? origin.region;
+      origin.country = jh.country ?? origin.country;
+      origin.precision = jh.precision;
+      origin.documented = { source: jh.source, quote: jh.quote, verifiedAt: '2026-11-22' };
+      if (!control.servingEntity) control.servingEntity = jh.operator;
+      break;
+    }
   }
 
   if (facilities?.facilities?.length) {

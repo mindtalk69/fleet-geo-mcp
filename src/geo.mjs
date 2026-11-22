@@ -144,7 +144,7 @@ export const REGION_COUNTRY = {
 };
 
 export const COUNTRY_COORDS = {
-  US: { lat: 38.9, lon: -77.0 }, CN: { lat: 31.23, lon: 121.47 }, SG: { lat: 1.35, lon: 103.82 },
+  US: { lat: 38.9, lon: -77.0 }, EU: { lat: 50.11, lon: 8.68 }, CN: { lat: 31.23, lon: 121.47 }, SG: { lat: 1.35, lon: 103.82 },
   JP: { lat: 35.68, lon: 139.69 }, KR: { lat: 37.57, lon: 126.98 }, TW: { lat: 25.03, lon: 121.56 },
   HK: { lat: 22.32, lon: 114.17 }, IN: { lat: 19.08, lon: 72.88 }, DE: { lat: 50.11, lon: 8.68 },
   IE: { lat: 53.35, lon: -6.26 }, NL: { lat: 52.37, lon: 4.9 }, GB: { lat: 51.51, lon: -0.13 },
@@ -329,6 +329,60 @@ export function regionFromHostname(host) {
     if (m && REGION_COORDS[m[1]]) return m[1];
   }
   return findRegionToken(h);
+}
+
+// Jurisdiction-encoded API gateway hostnames whose operators document end-to-end
+// regional decryption and in-region routing (tier A anchors).
+const GATEWAY_JURISDICTIONS = [
+  {
+    re: /^us\.openrouter\.ai$/i,
+    country: 'US',
+    region: null,
+    precision: 'country',
+    operator: 'OpenRouter (US In-Region Routing)',
+    source: 'https://openrouter.ai/blog/announcements/us-in-region-routing/',
+    quote: 'Requests to us.openrouter.ai are decrypted inside the US and routed only to US provider endpoints, so your prompts and completions stay in-region at every step OpenRouter controls.',
+  },
+  {
+    re: /^eu\.openrouter\.ai$/i,
+    country: 'EU',
+    region: 'EU',
+    precision: 'region',
+    operator: 'OpenRouter (EU In-Region Routing)',
+    source: 'https://openrouter.ai/blog/announcements/us-in-region-routing/',
+    quote: 'Requests to eu.openrouter.ai are decrypted inside the EU and routed only to shared provider endpoints in Europe (the EU/EEA, the UK, and Switzerland).',
+  },
+  {
+    re: /^(us|eu|jp|au|in|ca|sg|kr|gb|de|ch)\.api\.openai\.com$/i,
+    fromMatch: (m) => {
+      const code = m[1].toUpperCase();
+      return {
+        country: code,
+        region: code === 'EU' ? 'EU' : null,
+        precision: code === 'EU' ? 'region' : 'country',
+        operator: `OpenAI (${code} Regional API)`,
+        source: 'https://developers.openai.com/api/docs/guides/data-residency',
+        quote: 'For requests sent to us.api.openai.com, eu.api.openai.com, au.api.openai.com, in.api.openai.com, or jp.api.openai.com, OpenAI uses Cloudflare Regional Services so that TLS termination and HTTPS decryption occur within the selected processing region.',
+      };
+    },
+  },
+];
+
+export function jurisdictionFromHostname(host) {
+  const h = String(host ?? '').trim().toLowerCase();
+  for (const rule of GATEWAY_JURISDICTIONS) {
+    const m = rule.re.exec(h);
+    if (!m) continue;
+    return rule.fromMatch ? rule.fromMatch(m) : {
+      country: rule.country,
+      region: rule.region,
+      precision: rule.precision,
+      operator: rule.operator,
+      source: rule.source,
+      quote: rule.quote,
+    };
+  }
+  return null;
 }
 
 export const round = (n, d = 1) => (Number.isFinite(n) ? Number(n.toFixed(d)) : null);

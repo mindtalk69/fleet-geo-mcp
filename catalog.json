@@ -16,7 +16,8 @@
       ],
       "apiHosts": [
         "api.openai.com",
-        "chatgpt.com"
+        "chatgpt.com",
+        "*.api.openai.com"
       ],
       "laneClis": [
         "codex"
@@ -146,7 +147,9 @@
         "^grok"
       ],
       "apiHosts": [
-        "api.x.ai"
+        "api.x.ai",
+        "grok.com",
+        "*.grok.com"
       ],
       "laneClis": [
         "grok"
@@ -265,6 +268,24 @@
       "facilityAnchors": [],
       "status": "hypothesis",
       "notes": "Almost certainly re-served. The serving entity, not the publisher, holds the location."
+    },
+    {
+      "key": "openrouter",
+      "publisher": "OpenRouter",
+      "legalEntity": "OpenRouter, Inc. (US)",
+      "match": [
+        "^openrouter/"
+      ],
+      "apiHosts": [
+        "openrouter.ai",
+        "us.openrouter.ai",
+        "eu.openrouter.ai"
+      ],
+      "laneClis": [],
+      "residency": [],
+      "facilityAnchors": [],
+      "status": "verified",
+      "notes": "Multi-provider gateway. Global openrouter.ai routes to upstream inference providers (check the response provider field). Regional endpoints us.openrouter.ai (US) and eu.openrouter.ai (EU/EEA/UK/CH) perform end-to-end regional decryption and in-region routing (https://openrouter.ai/blog/announcements/us-in-region-routing/)."
     },
     {
       "key": "unresolved",

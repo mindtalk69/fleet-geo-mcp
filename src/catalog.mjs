@@ -29,6 +29,12 @@ export function loadConfig() {
   return configCache;
 }
 
+const hostMatches = (host, pattern) => {
+  const h = String(host ?? '').toLowerCase();
+  const p = String(pattern ?? '').toLowerCase();
+  return p.startsWith('*.') ? h.endsWith(p.slice(1)) : h === p;
+};
+
 /** Match a model id, a lane/CLI name, or an API hostname to a catalog provider. */
 export function matchProvider(catalog, { model, lane, host } = {}) {
   const providers = catalog.providers ?? [];
@@ -44,11 +50,16 @@ export function matchProvider(catalog, { model, lane, host } = {}) {
   // A bare base URL (observe_endpoints, locate_model {base_url}) still carries the
   // provider's documented facts when its host is one of that provider's API hosts.
   if (host) {
-    const h = String(host).toLowerCase();
-    const hit = providers.find((p) => (p.apiHosts ?? []).some((a) => String(a).toLowerCase() === h));
+    const hit = providers.find((p) => (p.apiHosts ?? []).some((a) => hostMatches(host, a)));
     if (hit) return { ...hit, matchedBy: 'host' };
   }
   return null;
+}
+
+/** True when `host` belongs to `provider`'s own API hosts. */
+export function providerOwnsHost(provider, host) {
+  if (!provider || !host) return false;
+  return (provider.apiHosts ?? []).some((a) => hostMatches(host, a));
 }
 
 export function ageDays(iso) {

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveHost } from './src/doh.mjs';
 import { asnForIp, certSubdomains, cloudRangeFor, loadCloudRanges, peeringdbFor, probeEdgeHeaders, rdapFor, runMeasurement } from './src/sources.mjs';
 import { analyzeLatency, assemble } from './src/classify.mjs';
-import { isEntitled, loadCatalog, loadConfig, matchProvider, recordFact, staleness } from './src/catalog.mjs';
+import { isEntitled, loadCatalog, loadConfig, matchProvider, providerOwnsHost, recordFact, staleness } from './src/catalog.mjs';
 import { EDGE_ASNS, coordsFor, parseAddress } from './src/geo.mjs';
 import { extractRdapScopes, lookupGeofeed } from './src/geofeed.mjs';
 import { ConnectionMib } from './src/tcpip.mjs';
@@ -327,7 +327,16 @@ async function locateCore({ model = null, lane = null, baseUrl: explicitUrl = nu
     lane = fleetLane.cli;
     model = model ?? fleetLane.model ?? null;
   }
-  const provider = matchProvider(catalog, { model, lane, host: explicitUrl ? hostOf(explicitUrl) : null });
+  const explicitHost = explicitUrl ? hostOf(explicitUrl) : null;
+  const hostProvider = explicitHost ? matchProvider(catalog, { host: explicitHost }) : null;
+  const modelProvider = matchProvider(catalog, { model, lane });
+  // Publisher = who made the weights; servingProvider = who operates the actual base_url.
+  // When an explicit base_url belongs to a gateway/aggregator (e.g. us.openrouter.ai) or
+  // another host outside the model author's own domains, NEVER inherit the model author's
+  // direct-API residency (e.g. DeepSeek CN does not apply when routed via us.openrouter.ai).
+  const thirdPartyHost = Boolean(explicitHost && !hostProvider && modelProvider && !providerOwnsHost(modelProvider, explicitHost));
+  const servingProvider = hostProvider ?? (thirdPartyHost ? null : modelProvider);
+  const provider = servingProvider ?? modelProvider;
   const baseUrl = explicitUrl ?? (provider?.apiHosts?.[0] ? `https://${provider.apiHosts[0]}` : null);
 
   if (!baseUrl) {
@@ -344,7 +353,10 @@ async function locateCore({ model = null, lane = null, baseUrl: explicitUrl = nu
 
   const nonEdge = ipFacts.filter((f) => f.asn && !EDGE_ASNS[f.asn.asn]);
   const facilities = deep && nonEdge.length ? await peeringdbFor(nonEdge[0].asn.asn).catch(() => null) : null;
-  const servingEntity = facilities?.name ?? nonEdge[0]?.asn?.org ?? null;
+  const servingEntity =
+    facilities?.name ??
+    nonEdge[0]?.asn?.org ??
+    (hostProvider && hostProvider.key !== modelProvider?.key ? hostProvider.publisher : null);
 
   const card = assemble({
     subject: {
@@ -353,29 +365,35 @@ async function locateCore({ model = null, lane = null, baseUrl: explicitUrl = nu
       lane,
       baseUrl,
       host,
-      publisher: provider?.publisher ?? null,
+      publisher: modelProvider?.publisher ?? servingProvider?.publisher ?? null,
       servingEntity,
     },
     chain,
     ipFacts,
     facilities,
-    catalogFacts: provider
+    catalogFacts: servingProvider
       ? {
-          publisher: provider.publisher,
-          legalEntity: provider.legalEntity,
-          residency: provider.residency,
-          facilityAnchors: provider.facilityAnchors,
+          publisher: servingProvider.publisher,
+          legalEntity: servingProvider.legalEntity,
+          residency: servingProvider.residency,
+          facilityAnchors: servingProvider.facilityAnchors,
         }
       : null,
   });
+  if (thirdPartyHost) {
+    card.warnings.push(
+      `base_url host ${explicitHost} is not a documented host for ${modelProvider.publisher}; the publisher's direct-API residency does not apply to a third-party gateway or router.`,
+    );
+  }
 
   card.catalog = {
-    matched: provider?.key ?? null,
-    matchedBy: provider?.matchedBy ?? null,
-    status: provider?.status ?? null,
+    matched: servingProvider?.key ?? null,
+    matchedBy: servingProvider?.matchedBy ?? null,
+    publisherMatched: modelProvider?.key ?? null,
+    status: servingProvider?.status ?? null,
     lastReviewed: catalog.lastReviewed,
-    stale: provider ? staleness(catalog, provider) : [],
-    notes: provider?.notes ?? null,
+    stale: servingProvider ? staleness(catalog, servingProvider) : [],
+    notes: servingProvider?.notes ?? null,
   };
 
   return card;

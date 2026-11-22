@@ -1,6 +1,6 @@
 // Self-test. Offline assertions are strict (they gate the exit code); network checks
 // are tolerant, because a flaky upstream must not look like a broken tool.
-import { cidrContains, cidrContains6, coordsFor, findRegionToken, fingerprintHost, haversineKm, ipv4ToInt, ipv6ToBigInt, regionFromHostname, rttFloorMs, rttViolates } from '../src/geo.mjs';
+import { cidrContains, cidrContains6, coordsFor, findRegionToken, fingerprintHost, haversineKm, ipv4ToInt, ipv6ToBigInt, jurisdictionFromHostname, regionFromHostname, rttFloorMs, rttViolates } from '../src/geo.mjs';
 import { analyzeLatency, assemble, downgrade } from '../src/classify.mjs';
 import { isEntitled, loadCatalog, matchProvider, recordFact } from '../src/catalog.mjs';
 import { asnForIp, cloudRangeFor, runMeasurement } from '../src/sources.mjs';
@@ -58,6 +58,24 @@ await t('rtt violation Helsinki->Ashburn @1.4ms', () => ok(rttViolates(1.4, 7000
 await t('rtt plausible @120ms', () => ok(!rttViolates(120, 7000)));
 await t('region from bedrock hostname', () => eq(regionFromHostname('bedrock-runtime.us-east-2.amazonaws.com'), 'us-east-2'));
 await t('region from vertex hostname', () => eq(regionFromHostname('europe-west4-aiplatform.googleapis.com'), 'europe-west4'));
+await t('jurisdiction from regional gateway hostnames (OpenRouter US/EU, OpenAI regional)', () => {
+  eq(jurisdictionFromHostname('us.openrouter.ai')?.country, 'US');
+  eq(jurisdictionFromHostname('eu.openrouter.ai')?.country, 'EU');
+  eq(jurisdictionFromHostname('eu.api.openai.com')?.country, 'EU');
+  eq(jurisdictionFromHostname('jp.api.openai.com')?.country, 'JP');
+  eq(jurisdictionFromHostname('openrouter.ai'), null);
+});
+await t('us.openrouter.ai anchors to US without inheriting DeepSeek CN residency', () => {
+  const card = assemble({
+    subject: { host: 'us.openrouter.ai', baseUrl: 'https://us.openrouter.ai/api/v1', model: 'deepseek-v4-pro', publisher: 'DeepSeek' },
+    ipFacts: [{ ip: '104.18.3.115', asn: { asn: 13335, org: 'CLOUDFLARENET', country: 'US' } }],
+    catalogFacts: null,
+  });
+  eq(card.confidence, 'ANCHORED');
+  eq(card.location.country, 'US');
+  eq(card.subject.publisher, 'DeepSeek');
+  eq(card.mapPins.origin.country, 'US');
+});
 await t('cloudfront fingerprint is edge', () => eq(fingerprintHost('d3bbv8sr76az5s.cloudfront.net')?.plane, 'edge'));
 await t('coordsFor region', () => ok(coordsFor({ region: 'ap-southeast-1' })?.place === 'Singapore'));
 
