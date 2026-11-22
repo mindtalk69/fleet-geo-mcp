@@ -1,7 +1,11 @@
 # Install
 
+Placeholders used throughout: `<profile>` is your DSH profile directory,
+`<node.exe>` is the DSH runtime node (the value of `$env:DSH_NODE_EXECUTABLE`), and
+`<repo>` is this checkout.
+
 Two routes. Both need one approval, because both write outside this workspace (into the
-DSH profile at `C:\Users\mwull\.dsh\profiles\desktop`).
+DSH profile at `%USERPROFILE%\.dsh\profiles\<profile>`).
 
 ## Route A — as a bundle (recommended, removable from the Plugins UI)
 
@@ -9,13 +13,13 @@ The bundle lives in this repo at [`dsh-bundle/`](dsh-bundle/). Add it to the pro
 bundle list, then let the plugin manager install it:
 
 1. Add `"@local/fleet-geo-mcp": "file:C:/DEV/fleet-geo-mcp/dsh-bundle"` to
-   `dsh.profile.bundles` in `C:\Users\mwull\.dsh\profiles\desktop\package.json`.
+   `dsh.profile.bundles` in `%USERPROFILE%\.dsh\profiles\<profile>\package.json`.
 2. Run `pnpm install` in that profile directory using DSH's bundled pnpm.
 3. Install/enable the bundle (`plugin_manager` `install_bundle`, or the Plugins UI).
 
 ## Route B — direct patch row (fastest, one file)
 
-Append this to `C:\Users\mwull\.dsh\profiles\desktop\cordis.patch.yml`:
+Append this to `%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`:
 
 ```yaml
 # fleet-geo: passive provider geolocation MCP
@@ -25,7 +29,7 @@ Append this to `C:\Users\mwull\.dsh\profiles\desktop\cordis.patch.yml`:
       config:
         serverName: fleetgeo
         transport: stdio
-        command: 'C:/Users/mwull/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe'
+        command: '<absolute path to node.exe>'
         args:
           - 'C:/DEV/fleet-geo-mcp/server.mjs'
         cwd: 'C:/DEV/fleet-geo-mcp'
@@ -46,7 +50,7 @@ After the row mounts, the tools appear as `mcp__fleetgeo__*`:
 Without DSH, prove the server standalone:
 
 ```powershell
-cd C:\DEV\fleet-geo-mcp
+cd <repo>
 node server.mjs --selftest                                   # 41 checks
 node server.mjs --list-tools
 node server.mjs --tool locate_model --args '{"lane":"W7"}'

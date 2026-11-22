@@ -1,5 +1,7 @@
 # fleet-geo — an MCP that answers "where does this model actually run?"
 
+[![test](https://github.com/mindtalk69/fleet-geo-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/mindtalk69/fleet-geo-mcp/actions/workflows/test.yml)
+
 A zero-dependency MCP server (stdio, Node >= 20) that resolves the physical location of
 inference for each model in the Orca fleet, and refuses to guess.
 
@@ -151,3 +153,13 @@ node test/stdio-check.mjs
 [`docs/PROMPT.md`](docs/PROMPT.md) is the analyst prompt this server replaced: a static spec
 that rots the moment a provider changes. Kept as the design rationale - the four planes, the
 evidence ladder, the falsification pass - for when the tool's output needs arguing in prose.
+
+## Install
+
+Two routes - a DSH bundle or a single patch row - both in [INSTALL.md](INSTALL.md).
+Placeholders there map to `$env:DSH_NODE_EXECUTABLE`, `%USERPROFILE%\.dsh\profiles\<profile>`,
+and this checkout.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
