@@ -237,7 +237,7 @@ the model, and what their documentation claims.
 
 ```powershell
 cd C:\DEV\fleet-geo-mcp
-npm test                          # selftest (44) + tcpip (8) + observe (12) + native (7)
+npm test                          # selftest (44) + tcpip (8) + observe (14) + native (7)
 npm run build:native              # optional: build Rust N-API core (native/*.node)
 FLEET_GEO_NATIVE=0 npm test       # verify pure-JS fallback without native addon
 node server.mjs --tool inspect_connections --args '{"locate":false}'
