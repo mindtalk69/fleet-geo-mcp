@@ -6,8 +6,10 @@
 //
 // Layers, all without root:
 //   proxy    a logging HTTP CONNECT proxy (pure Node, every OS) for CLIs that honour HTTPS_PROXY
-//   sockets  the OS socket table for the CLI's process tree: ss (Linux), lsof (macOS),
-//            netstat -ano (Windows). Sees CLIs that ignore the proxy; IPs only.
+//   sockets  RFC 1792-modeled dual-stack TCP/UDP connection & listener MIB from the OS socket
+//            table: ss -tnupHa (Linux), lsof -nP -iTCP -iUDP (macOS), netstat -ano (Windows).
+//            Captures IPv4 + IPv6, all TCP states (SYN-SENT..TIME-WAIT), UDP/QUIC, and separates
+//            unspecified-network listeners from active connections.
 //   strace   Linux, when installed: SNI + DNS names + every connect, bound to remote IP.
 import http from 'node:http';
 import net from 'node:net';
@@ -15,6 +17,17 @@ import { spawn, execFile } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import {
+  ConnectionMib,
+  isLoopbackAddress,
+  isUnspecifiedAddress,
+  parseAddress,
+  parseLsof,
+  parseNetstat,
+  parseSs,
+} from './tcpip.mjs';
+
+export { ConnectionMib, parseLsof, parseNetstat, parseSs };
 
 /* ---------------------------------------------------------------- parsers ---- */
 
@@ -78,18 +91,26 @@ export function parseStrace(text) {
   for (const raw of String(text).split('\n')) {
     // -xx hex-escapes every string, including the address inside inet_addr("...").
     const line = raw.replace(/(inet_addr\(|inet_pton\(AF_INET6, )"((?:\\x[0-9a-f]{2})+)"/gi, (_, fn, h) => `${fn}"${unescapeStrace(h).toString('latin1')}"`);
-    const c = line.match(/\bconnect\(\d+(?:<[^>]*>)?, \{sa_family=AF_INET6?, sin6?_port=htons\((\d+)\),.*?(?:inet_addr\("([^"]+)"\)|inet_pton\(AF_INET6, "([^"]+)")/);
+    const c = line.match(/\bconnect\(\d+(?:<([^>]*)>)?, \{sa_family=(AF_INET6?), sin6?_port=htons\((\d+)\),.*?(?:inet_addr\("([^"]+)"\)|inet_pton\(AF_INET6, "([^"]+)")/);
     if (c) {
-      const ip = c[2] ?? c[3];
-      if (ip !== '0.0.0.0' && !ip.startsWith('/')) connects.push({ ip, port: Number(c[1]) });
+      const rawIp = c[4] ?? c[5];
+      if (!rawIp || rawIp.startsWith('/')) continue;
+      const addr = parseAddress(rawIp);
+      const ip = addr?.normalized ?? rawIp;
+      if (addr?.isUnspecified || ip === '0.0.0.0' || ip === '::') continue;
+      const sockTag = String(c[1] ?? '').toUpperCase();
+      const protocol = sockTag.startsWith('UDP') ? 'udp' : 'tcp';
+      const family = addr?.family ?? (c[2] === 'AF_INET6' ? 'ipv6' : 'ipv4');
+      connects.push({ ip, port: Number(c[3]), protocol, family });
       continue;
     }
-    const w = line.match(/\b(?:write|writev|sendto|sendmsg|sendmmsg|send)\(\d+<(TCP6?|UDP6?):\[(.*?)->\[?([0-9a-f.:]+?)\]?:(\d+)\]>/i);
+    const w = line.match(/\b(?:write|writev|sendto|sendmsg|sendmmsg|send)\(\d+<(TCP6?|UDP6?):\[(.*?)->\[?([0-9a-f.:%]+?)\]?:(\d+)\]>/i);
     if (!w) continue;
     const blobs = [...line.matchAll(/"((?:\\x[0-9a-f]{2})+)"/gi)].map((m) => unescapeStrace(m[1]));
     if (!blobs.length) continue;
     const payload = Buffer.concat(blobs);
-    const remote = { ip: w[3], port: Number(w[4]) };
+    const addr = parseAddress(w[3]);
+    const remote = { ip: addr?.normalized ?? w[3], port: Number(w[4]) };
     if (w[1].startsWith('TCP')) {
       const host = parseClientHelloSni(payload);
       if (host) sni.push({ ...remote, host });
@@ -102,38 +123,6 @@ export function parseStrace(text) {
     }
   }
   return { connects, sni, dns };
-}
-
-/** Remote TCP endpoints per pid from `ss -tnpH` (Linux). */
-export function parseSs(text) {
-  const out = [];
-  for (const line of String(text).split('\n')) {
-    const m = line.match(/^\S+\s+\d+\s+\d+\s+\S+\s+(\[?[0-9a-f.:%]+\]?):(\d+)\s.*?pid=(\d+)/i);
-    if (m) out.push({ ip: m[1].replace(/^\[|\]$/g, '').replace(/^::ffff:/, ''), port: Number(m[2]), pid: Number(m[3]) });
-  }
-  return out;
-}
-
-/** Remote TCP endpoints per pid from `lsof -nP -iTCP -sTCP:ESTABLISHED -F pn` (macOS). */
-export function parseLsof(text) {
-  const out = [];
-  let pid = null;
-  for (const line of String(text).split('\n')) {
-    if (line.startsWith('p')) pid = Number(line.slice(1));
-    const m = line.match(/^n.*->\[?([0-9a-f.:]+?)\]?:(\d+)$/i);
-    if (m && pid) out.push({ ip: m[1], port: Number(m[2]), pid });
-  }
-  return out;
-}
-
-/** Remote TCP endpoints per pid from `netstat -ano -p TCP` (Windows). */
-export function parseNetstat(text) {
-  const out = [];
-  for (const line of String(text).split(/\r?\n/)) {
-    const m = line.trim().match(/^TCP\s+\S+\s+\[?([0-9a-f.:%]+?)\]?:(\d+)\s+ESTABLISHED\s+(\d+)$/i);
-    if (m) out.push({ ip: m[1], port: Number(m[2]), pid: Number(m[3]) });
-  }
-  return out;
 }
 
 /** pid -> ppid rows from `ps -A -o pid=,ppid=` or Windows CSV (ProcessId,ParentProcessId). */
@@ -155,7 +144,7 @@ export function descendants(rows, root) {
   return seen;
 }
 
-const isLoopback = (ip) => /^(127\.|::1$|0\.0\.0\.0$|::$)/.test(ip) || ip === 'localhost';
+const isLoopback = (ip) => isLoopbackAddress(ip) || isUnspecifiedAddress(ip);
 
 /* ------------------------------------------------------------------ proxy ---- */
 
@@ -216,14 +205,17 @@ export function startProxy() {
 const run = (cmd, args, timeout = 5000) =>
   new Promise((resolve) => execFile(cmd, args, { timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => resolve(err && !stdout ? '' : String(stdout))));
 
-async function socketSnapshot(platform) {
-  if (platform === 'linux') return parseSs(await run('ss', ['-tnpH', 'state', 'established']));
-  if (platform === 'darwin') return parseLsof(await run('lsof', ['-nP', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pn']));
-  if (platform === 'win32') return parseNetstat(await run('netstat', ['-ano', '-p', 'TCP']));
+/**
+ * Snapshot dual-stack TCP (all RFC 1792 states) and UDP sockets/listeners on any OS.
+ */
+export async function socketSnapshot(platform = process.platform) {
+  if (platform === 'linux') return parseSs(await run('ss', ['-tnupHa']));
+  if (platform === 'darwin') return parseLsof(await run('lsof', ['-nP', '-iTCP', '-iUDP', '-F', 'pcfnPT']));
+  if (platform === 'win32') return parseNetstat(await run('netstat', ['-ano']));
   return [];
 }
 
-async function processTable(platform) {
+export async function processTable(platform = process.platform) {
   if (platform === 'win32') {
     return parseProcessTable(await run('powershell', ['-NoProfile', '-Command',
       'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Csv -NoTypeInformation']));
@@ -309,17 +301,14 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
     child.stdout.on('data', (d) => { if (stdout.length < 4000) stdout += d; });
     child.stderr.on('data', (d) => { if (stderr.length < 4000) stderr += d; });
 
-    const sockets = new Map();
+    const mib = new ConnectionMib();
     let polling = true;
     const poll = (async () => {
       while (polling) {
         const [table, conns] = await Promise.all([processTable(platform), socketSnapshot(platform)]);
         const tree = descendants(table, child.pid);
-        for (const c of conns) {
-          if (!tree.has(c.pid) || isLoopback(c.ip)) continue;
-          const key = `${c.ip}:${c.port}`;
-          if (!sockets.has(key)) sockets.set(key, { ip: c.ip, port: c.port, pid: c.pid, firstSeen: new Date().toISOString() });
-        }
+        const treeConns = conns.filter((c) => c.pid != null && tree.has(c.pid));
+        mib.ingest(treeConns, { now: new Date().toISOString(), markMissingClosed: true });
         await new Promise((r) => setTimeout(r, pollMs));
       }
     })();
@@ -338,21 +327,35 @@ export async function observeLane(lane, { timeoutMs = 120_000, platform = proces
     await proxy.close();
 
     const traced = strace && existsSync(straceOut) ? parseStrace(readFileSync(straceOut, 'utf8')) : null;
-    return summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, stdout, stderr, tunnels: proxy.tunnels, sockets: [...sockets.values()], traced });
+    return summarize({
+      lane,
+      cmd,
+      platform,
+      startedAt,
+      exitCode,
+      timedOut,
+      stdout,
+      stderr,
+      tunnels: proxy.tunnels,
+      sockets: mib.remoteEndpoints({ includeLoopback: true }),
+      mib: mib.snapshot(),
+      traced,
+    });
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
 /** Merge the layers into one evidence record. Pure, so the test can drive it. */
-export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, stdout = '', stderr = '', tunnels = [], sockets = [], traced = null }) {
+export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, stdout = '', stderr = '', tunnels = [], sockets = [], mib = null, traced = null }) {
   const hosts = new Map();
   const touch = (host, port, via, extra = {}) => {
     if (!host || isLoopback(host)) return;
     const key = `${host}:${port}`;
     const h = hosts.get(key) ?? { host, port, via: [], ips: [], up: 0, down: 0 };
     if (!h.via.includes(via)) h.via.push(via);
-    if (extra.ip && !h.ips.includes(extra.ip)) h.ips.push(extra.ip);
+    const normIp = extra.ip ? (parseAddress(extra.ip)?.normalized ?? extra.ip) : null;
+    if (normIp && !h.ips.includes(normIp)) h.ips.push(normIp);
     h.up += extra.up ?? 0;
     h.down += extra.down ?? 0;
     hosts.set(key, h);
@@ -362,17 +365,32 @@ export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, 
   for (const s of traced?.sni ?? []) if (!isLoopback(s.ip)) touch(s.host, s.port, 'tls-sni', { ip: s.ip });
   // A CLI that only reaches loopback ports may hand its traffic to a local proxy or
   // gateway outside its process tree - say so instead of reporting nothing.
-  const loopbackOnly = [...new Set([...(traced?.connects ?? []), ...sockets].filter((c) => isLoopback(c.ip) && c.port !== 53).map((c) => c.port))];
+  const loopbackOnly = [...new Set([...(traced?.connects ?? []), ...sockets].filter((c) => isLoopbackAddress(c.ip) && c.port !== 53).map((c) => c.port))];
 
   const named = new Set([...hosts.values()].flatMap((h) => h.ips));
   const unnamed = new Map();
   for (const c of [...sockets, ...(traced?.connects ?? [])]) {
-    if (isLoopback(c.ip) || c.port === 53 || named.has(c.ip)) continue;
-    unnamed.set(`${c.ip}:${c.port}`, { ip: c.ip, port: c.port, via: c.pid ? 'socket-table' : 'strace-connect' });
+    const addr = parseAddress(c.ip);
+    const normIp = addr?.normalized ?? c.ip;
+    if (isLoopback(normIp) || c.port === 53 || named.has(normIp)) continue;
+    const proto = c.protocol ?? 'tcp';
+    const key = `${proto}:${normIp}:${c.port}`;
+    if (!unnamed.has(key)) {
+      const entry = {
+        ip: normIp,
+        port: c.port,
+        via: c.pid != null ? 'socket-table' : 'strace-connect',
+      };
+      if (c.protocol) entry.protocol = c.protocol;
+      if (c.family ?? addr?.family) entry.family = c.family ?? addr.family;
+      if (c.states?.length) entry.states = c.states;
+      unnamed.set(key, entry);
+    }
   }
   const hostList = [...hosts.values()].sort((a, b) => b.down + b.up - (a.down + a.up));
-  const layers = { proxy: tunnels.length > 0, sockets: sockets.length > 0, strace: traced ? true : null };
-  return {
+  const mibCount = (mib?.summary?.tcpConnections ?? 0) + (mib?.summary?.udpEndpoints ?? 0);
+  const layers = { proxy: tunnels.length > 0, sockets: sockets.length > 0 || mibCount > 0, strace: traced ? true : null };
+  const result = {
     lane: lane.lane,
     cli: lane.cli,
     platform,
@@ -391,4 +409,6 @@ export function summarize({ lane, cmd, platform, startedAt, exitCode, timedOut, 
     note: 'Observed hosts are where the CLI connects (control plane, ending at the TLS edge). They are not the inference origin.',
     output: { stdout: stdout.slice(0, 400), stderr: stderr.slice(0, 400) },
   };
+  if (mib) result.connectionMib = mib;
+  return result;
 }

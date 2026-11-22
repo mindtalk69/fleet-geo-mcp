@@ -17,6 +17,9 @@ async function dohQuery(name, type, r) {
   const res = await fetch(url, { headers: r.hdr, signal: AbortSignal.timeout(r.timeout) });
   if (!res.ok) throw new Error(`${r.name} HTTP ${res.status}`);
   const j = await res.json();
+  // RFC 1035 RCODE 2 (SERVFAIL) / 5 (REFUSED) is a resolver failure, not NXDOMAIN:
+  // fail over to the next DoH resolver instead of caching an empty answer.
+  if (j.Status === 2 || j.Status === 5) throw new Error(`${r.name} DNS RCODE ${j.Status}`);
   return {
     resolver: r.name,
     status: j.Status ?? 0,

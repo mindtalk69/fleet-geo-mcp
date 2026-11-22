@@ -10,18 +10,20 @@ that re-derives the answer from live data does not.
 
 ```
 fleet-geo-mcp/
-  server.mjs              MCP stdio transport + 10 tools
-  src/observe.mjs         observe_endpoints: proxy, OS socket table, strace SNI/DNS (no decryption)
-  src/doh.mjs             DNS over HTTPS (ISP-independent evidence)
-  src/sources.mjs         Cymru ASN, RDAP, AWS/GCP prefix tables, PeeringDB, crt.sh, globalping, headers
-  src/geo.mjs             CIDR math, distance, RTT floor, region anchors, hostname fingerprints
+  server.mjs              MCP stdio transport + 11 tools
+  src/tcpip.mjs           RFC 1792-modeled dual-stack TCP/UDP connection MIB & IPv4/IPv6 primitives
+  src/observe.mjs         observe_endpoints: proxy, OS socket table (TCP+UDP), strace SNI/DNS
+  src/doh.mjs             DNS over HTTPS (ISP-independent dual-stack A/AAAA/CNAME evidence)
+  src/sources.mjs         Cymru ASN (IPv4+IPv6), RDAP, AWS/GCP IPv4+IPv6 prefix tables, PeeringDB, crt.sh, globalping, headers
+  src/geo.mjs             CIDR math (IPv4+IPv6), distance, RTT floor, region anchors, hostname fingerprints
   src/classify.mjs        evidence -> four planes -> confidence + contradictions
   src/catalog.mjs         the only hand-maintained data, plus record_fact
   catalog.json            provider seeds, all marked hypothesis until cited
   fleet.json              the lane table (W1-W7, C, B, T) - adding a lane is a one-line edit
   config.json             entitled-host allowlist + limits
-  test/selftest.mjs       41 checks (offline strict, online tolerant)
-  test/observe.test.mjs   11 observe_endpoints checks, offline on every OS
+  test/selftest.mjs       offline strict + online tolerant checks (IPv4 + IPv6)
+  test/tcpip.test.mjs     RFC 1792 dual-stack TCP/UDP MIB & address tests
+  test/observe.test.mjs   observe_endpoints checks, offline on every OS
   test/stdio-check.mjs    protocol surface, replayed from a recorded session
   dsh-bundle/             the DSH wrapper, shipped with the server
 ```
@@ -67,12 +69,13 @@ down the street as "the datacenter".
 | `locate_model` | one lane: model / lane name / base_url -> full location card |
 | `fleet_status` | every lane in one sweep -> table + roll-up |
 | `trace_endpoint` | one hostname -> CNAME hops, ASN, cloud region, RDAP |
-| `lookup_prefix` | one IP -> ASN, published cloud region, PeeringDB facilities |
+| `lookup_prefix` | one IPv4 or IPv6 address -> ASN, published cloud region, PeeringDB facilities |
 | `find_regional_endpoints` | crt.sh subdomains, regional ones surfaced |
 | `probe_latency` | distributed probes + the RTT floor falsifier |
 | `inspect_edge` | headers from an **entitled** endpoint -> edge PoP only |
 | `record_fact` | cite a provider page with a quote -> tier-A anchor |
 | `observe_endpoints` | run a lane's one-line probe and record the hosts and IPs it really connects to |
+| `inspect_connections` | passive RFC 1792 dual-stack TCP/UDP connection & listener MIB snapshot with IP geolocation |
 | `explain_rules` | precedence, planes, confidence, falsifier |
 
 ### observe_endpoints
@@ -173,8 +176,10 @@ the model, and what their documentation claims.
 3. Passthrough aggregators (OpenRouter, Together, Fireworks) return a `provider` field per
    response. That is authoritative for the *serving entity*; the tool names it as the next
    probe instead of inventing it.
-4. IPv6 addresses skip the ASN lookup in v1 (IPv4 only); `observe_endpoints` labels them
-   `UNKNOWN` rather than presuming they are unicast endpoints.
+4. Dual-stack IPv4 and IPv6 addresses are both resolved through Team Cymru (`origin.asn.cymru.com` /
+   `origin6.asn.cymru.com`), AWS/GCP published IPv4 + IPv6 prefix tables, and RDAP. If an address
+   still yields neither ASN nor cloud-prefix data, `observe_endpoints` labels it `UNKNOWN` rather
+   than presuming it is a unicast endpoint.
 5. `observe_endpoints` sees where a CLI connects, which ends at the TLS edge. A CLI that
    hands traffic to a local gateway outside its process tree is reported as `LOCAL_GATEWAY`
    with the loopback ports, not as a location.

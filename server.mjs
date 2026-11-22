@@ -12,12 +12,13 @@ import { resolveHost } from './src/doh.mjs';
 import { asnForIp, certSubdomains, cloudRangeFor, loadCloudRanges, peeringdbFor, probeEdgeHeaders, rdapFor, runMeasurement } from './src/sources.mjs';
 import { analyzeLatency, assemble } from './src/classify.mjs';
 import { isEntitled, loadCatalog, loadConfig, matchProvider, recordFact, staleness } from './src/catalog.mjs';
-import { EDGE_ASNS } from './src/geo.mjs';
-import { laneCommand, observeLane } from './src/observe.mjs';
+import { EDGE_ASNS, parseAddress } from './src/geo.mjs';
+import { ConnectionMib } from './src/tcpip.mjs';
+import { descendants, laneCommand, observeLane, processTable, socketSnapshot } from './src/observe.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = { name: 'fleet-geo', version: '1.1.0' };
+const SERVER = { name: 'fleet-geo', version: '1.2.0' };
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
 /** The fleet definition is data, not prose: adding a lane is a one-line edit. */
@@ -34,25 +35,40 @@ const hostOf = (s) => {
 };
 
 async function factsForIp(ip) {
-  const [asn, cloud] = await Promise.all([asnForIp(ip).catch(() => null), cloudRangeFor(ip).catch(() => null)]);
-  const rdap = asn?.registry ? await rdapFor(ip, asn.registry).catch(() => null) : null;
-  return { ip, asn, cloud, rdap, edge: Boolean(asn && EDGE_ASNS[asn.asn]) };
+  const parsed = parseAddress(ip);
+  const normIp = parsed?.normalized ?? String(ip).trim();
+  const [asn, cloud] = await Promise.all([asnForIp(normIp).catch(() => null), cloudRangeFor(normIp).catch(() => null)]);
+  const rdap = asn?.registry ? await rdapFor(normIp, asn.registry).catch(() => null) : null;
+  return { ip: normIp, family: parsed?.family ?? null, asn, cloud, rdap, edge: Boolean(asn && EDGE_ASNS[asn.asn]) };
 }
 
 const chainCache = new Map();
 const CHAIN_TTL = 10 * 60_000;
 
-async function gatherChain(host, { maxIps = 3 } = {}) {
-  const hit = chainCache.get(host);
+/** Select a balanced dual-stack slice (both A and AAAA) up to maxIps. */
+function selectDualStackIps(addresses, maxIps) {
+  const v4 = addresses.filter((a) => a.type === 'A');
+  const v6 = addresses.filter((a) => a.type === 'AAAA');
+  const out = [];
+  for (let i = 0; out.length < maxIps && (i < v4.length || i < v6.length); i++) {
+    if (i < v4.length && out.length < maxIps) out.push(v4[i]);
+    if (i < v6.length && out.length < maxIps) out.push(v6[i]);
+  }
+  return out;
+}
+
+async function gatherChain(host, { maxIps = 4 } = {}) {
+  const key = `${host}|${maxIps}`;
+  const hit = chainCache.get(key);
   if (hit && Date.now() - hit.at < CHAIN_TTL) return hit.val;
 
   const chain = await resolveHost(host);
-  const ips = chain.addresses.filter((a) => a.type === 'A').slice(0, maxIps);
+  const ips = selectDualStackIps(chain.addresses, maxIps);
   const ipFacts = [];
   for (const a of ips) ipFacts.push(await factsForIp(a.ip));
 
   const val = { chain, ipFacts };
-  chainCache.set(host, { val, at: Date.now() });
+  chainCache.set(key, { val, at: Date.now() });
   return val;
 }
 
@@ -138,11 +154,11 @@ const TOOLS = [
     name: 'lookup_prefix',
     title: 'Look up an IP',
     description:
-      'Identify a single address: ASN and org, the cloud\'s own published region for the prefix, RDAP registration, and PeeringDB facilities. The published cloud region outranks any geoIP database.',
+      'Identify a single IPv4 or IPv6 address: ASN and org (Team Cymru origin/origin6), the cloud\'s own published IPv4/IPv6 region for the prefix, RDAP registration, and PeeringDB facilities. The published cloud region outranks any geoIP database.',
     inputSchema: {
       type: 'object',
       properties: {
-        ip: { type: 'string', description: 'IPv4 address.' },
+        ip: { type: 'string', description: 'IPv4 or IPv6 address.' },
         include_facilities: { type: 'boolean', description: 'Include PeeringDB facilities (default true).' },
       },
       required: ['ip'],
@@ -233,6 +249,25 @@ const TOOLS = [
         locate: { type: 'boolean', description: 'Also run locate_model on each observed host (default true).' },
       },
       required: ['lane'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'inspect_connections',
+    title: 'Inspect live TCP/UDP connection MIB',
+    description:
+      'Snapshot this host\'s live dual-stack TCP (all RFC 1792/793 states: SYN-SENT..TIME-WAIT) and UDP sockets into an RFC 1792-modeled four-table MIB (tcpConnTable, tcpUnspecConnTable, tcpListeners, udpTable, udpUnspecTable), optionally filtered by PID (including descendants) or process name. Geolocates remote IPv4 and IPv6 endpoints via ASN and published cloud prefix tables without spending a model call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pid: { type: 'integer', minimum: 1, description: 'Filter to a PID and its descendant process tree.' },
+        process: { type: 'string', description: 'Case-insensitive substring filter on process name (Linux/macOS).' },
+        protocol: { type: 'string', enum: ['all', 'tcp', 'udp'], description: 'Transport filter (default "all").' },
+        family: { type: 'string', enum: ['all', 'ipv4', 'ipv6'], description: 'Address family filter (default "all").' },
+        include_listeners: { type: 'boolean', description: 'Include unspecified/bound listener tables (default true).' },
+        locate: { type: 'boolean', description: 'Enrich remote IPv4/IPv6 endpoints with ASN and published cloud region (default true).' },
+        max_ips: { type: 'integer', minimum: 1, maximum: 50, description: 'Max unique remote IPs to enrich (default 12).' },
+      },
       additionalProperties: false,
     },
   },
@@ -419,6 +454,37 @@ async function toolInspectEdge(args) {
   return { ...r, entitlement: gate.reason };
 }
 
+async function ipCard(ip) {
+  const f = await factsForIp(ip).catch(() => null);
+  if (!f) return { ip, error: 'lookup-failed' };
+  if (!f.asn && !f.cloud) {
+    return {
+      ip: f.ip,
+      family: f.family,
+      asn: null,
+      org: null,
+      registeredCountry: null,
+      cloudRegion: null,
+      plane: 'UNKNOWN',
+      meaning: 'No ASN or cloud-prefix data; edge or endpoint undetermined.',
+    };
+  }
+  return {
+    ip: f.ip,
+    family: f.family,
+    asn: f.asn?.asn ?? null,
+    org: f.asn?.org ?? null,
+    registeredCountry: f.asn?.country ?? null,
+    cloudRegion: f.cloud ? `${f.cloud.cloud}/${f.cloud.region}` : null,
+    plane: f.edge ? 'EDGE' : 'ENDPOINT',
+    meaning: f.edge
+      ? 'CDN/anycast address: the TLS edge nearest this machine, not where inference runs.'
+      : f.cloud
+        ? 'Unicast cloud address in a published region: the endpoint this CLI reached is in that region.'
+        : 'Unicast address with registration data only: country of registration, not a measured location.',
+  };
+}
+
 async function toolObserveEndpoints(args) {
   const all = loadFleet().lanes;
   const wanted = String(args.lane ?? '').toLowerCase();
@@ -439,35 +505,17 @@ async function toolObserveEndpoints(args) {
     process.stderr.write(`observe ${lane.lane} (${lane.cli}) ...\n`);
     const r = await observeLane(lane, { timeoutMs: (args.timeout_s ?? 120) * 1000 });
     process.stderr.write(`observe ${lane.lane} done: ${r.verdict ?? r.error} exit=${r.exitCode} timedOut=${r.timedOut}\n`);
-    // Every destination IP from the packet headers gets its own location lookup: the
-    // cloud's published prefix region outranks registration data, and an anycast/CDN
-    // address is labelled EDGE so it is never read as the inference origin.
-    const ipCard = async (ip) => {
-      const f = await factsForIp(ip).catch(() => null);
-      if (!f) return { ip, error: 'lookup-failed' };
-      // No ASN data (IPv6 in v1, or a failed lookup): never presume unicast.
-      if (!f.asn && !f.cloud) {
-        return { ip, asn: null, org: null, registeredCountry: null, cloudRegion: null, plane: 'UNKNOWN',
-          meaning: ip.includes(':') ? 'IPv6: ASN lookup not supported yet; edge or endpoint undetermined.' : 'No ASN or cloud-prefix data; edge or endpoint undetermined.' };
-      }
-      return {
-        ip,
-        asn: f.asn?.asn ?? null,
-        org: f.asn?.org ?? null,
-        registeredCountry: f.asn?.country ?? null,
-        cloudRegion: f.cloud ? `${f.cloud.cloud}/${f.cloud.region}` : null,
-        plane: f.edge ? 'EDGE' : 'ENDPOINT',
-        meaning: f.edge
-          ? 'CDN/anycast address: the TLS edge nearest this machine, not where inference runs.'
-          : f.cloud ? 'Unicast cloud address in a published region: the endpoint this CLI reached is in that region.'
-          : 'Unicast address with registration data only: country of registration, not a measured location.',
-      };
-    };
     if (args.locate !== false) {
       for (const h of r.hosts ?? []) {
         h.ipLocations = await Promise.all(h.ips.slice(0, 4).map(ipCard));
         const card = await locateCore({ baseUrl: `https://${h.host}`, deep: false }).catch((e) => ({ error: e.message }));
-        h.locate = { confidence: card.confidence ?? null, edge: card.edge?.operator ?? null, origin: card.origin ?? null, error: card.error ?? null };
+        h.locate = {
+          confidence: card.confidence ?? null,
+          edge: card.planes?.edge?.operator ?? null,
+          origin: card.planes?.origin ?? null,
+          location: card.location ?? null,
+          error: card.error ?? null,
+        };
       }
       for (const u of r.unnamedConnections ?? []) Object.assign(u, await ipCard(u.ip));
     }
@@ -475,6 +523,55 @@ async function toolObserveEndpoints(args) {
     save();
   }
   return { results, savedTo: file };
+}
+
+async function toolInspectConnections(args) {
+  const platform = process.platform;
+  const proto = args.protocol ?? 'all';
+  const fam = args.family ?? 'all';
+  const procFilter = args.process ? String(args.process).toLowerCase() : null;
+
+  let conns = await socketSnapshot(platform);
+  if (args.pid) {
+    const table = await processTable(platform);
+    const tree = descendants(table, Number(args.pid));
+    conns = conns.filter((c) => c.pid != null && tree.has(c.pid));
+  }
+  if (procFilter) conns = conns.filter((c) => String(c.process ?? '').toLowerCase().includes(procFilter));
+  if (proto !== 'all') conns = conns.filter((c) => c.protocol === proto);
+  if (fam !== 'all') conns = conns.filter((c) => c.family === fam);
+
+  const mib = new ConnectionMib();
+  mib.ingest(conns, { now: new Date().toISOString() });
+  const snap = mib.snapshot();
+  const remoteEndpoints = mib.remoteEndpoints({ includeLoopback: false });
+
+  if (args.locate !== false && remoteEndpoints.length) {
+    const maxIps = Math.min(Math.max(args.max_ips ?? 12, 1), 50);
+    const uniqueIps = [...new Set(remoteEndpoints.map((e) => e.ip))].slice(0, maxIps);
+    const located = new Map(await Promise.all(uniqueIps.map(async (ip) => [ip, await ipCard(ip)])));
+    for (const ep of remoteEndpoints) {
+      if (located.has(ep.ip)) ep.location = located.get(ep.ip);
+    }
+  }
+
+  const out = {
+    observedAt: new Date().toISOString(),
+    platform,
+    rfc: snap.rfc,
+    plane: 'CONTROL',
+    summary: snap.summary,
+    remoteEndpoints,
+    tcpConnTable: snap.tcpConnTable,
+    udpTable: snap.udpTable,
+    note: 'Live OS socket snapshot modelled on RFC 1792. Remote endpoints show the CONTROL/EDGE plane; published cloud prefix regions outrank registration data, and CDN edges are never inference origins.',
+  };
+  if (args.include_listeners !== false) {
+    out.tcpUnspecConnTable = snap.tcpUnspecConnTable;
+    out.tcpListeners = snap.tcpListeners;
+    out.udpUnspecTable = snap.udpUnspecTable;
+  }
+  return out;
 }
 
 async function toolRecordFact(args) {
@@ -489,13 +586,14 @@ async function toolExplainRules() {
     catalog: { version: catalog.version, lastReviewed: catalog.lastReviewed, staleAfterDays: catalog.staleAfterDays, providers: catalog.providers.length },
     entitlement: { entitledHosts: config.entitledHosts, allowAnyHost: config.allowAnyHost },
     sources: [
-      'DoH: dns.google / cloudflare-dns.com',
-      'ASN: Team Cymru DNS (origin.asn.cymru.com, AS<asn>.asn.cymru.com)',
-      'RDAP: registry-specific (arin, ripe, apnic, lacnic, afrinic)',
-      'Cloud prefixes: AWS ip-ranges.json, gstatic cloud.json (Azure service tags unavailable: use the resource location instead)',
+      'DoH: dns.google / cloudflare-dns.com (dual-stack A + AAAA + CNAME)',
+      'ASN: Team Cymru DNS (origin.asn.cymru.com IPv4, origin6.asn.cymru.com IPv6, AS<asn>.asn.cymru.com)',
+      'RDAP: registry-specific (arin, ripe, apnic, lacnic, afrinic; IPv4 + IPv6)',
+      'Cloud prefixes: AWS ip-ranges.json (IPv4 + IPv6), gstatic cloud.json (IPv4 + IPv6)',
       'Facilities: PeeringDB netfac',
       'Certificates: crt.sh',
       'Probes: globalping.io',
+      'Local TCP/UDP MIB: RFC 1792-modeled dual-stack connection & unspecified-network listener tables (ss / lsof / netstat)',
     ],
   };
 }
@@ -509,6 +607,7 @@ const HANDLERS = {
   probe_latency: toolProbeLatency,
   inspect_edge: toolInspectEdge,
   observe_endpoints: toolObserveEndpoints,
+  inspect_connections: toolInspectConnections,
   record_fact: toolRecordFact,
   explain_rules: toolExplainRules,
 };

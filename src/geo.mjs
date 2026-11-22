@@ -1,32 +1,20 @@
-// Geography primitives: CIDR math, distance, the RTT floor falsifier, region anchors.
-
-const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-
-export function ipv4ToInt(ip) {
-  const m = IPV4.exec(String(ip).trim());
-  if (!m) return null;
-  const parts = m.slice(1).map(Number);
-  if (parts.some((p) => p > 255)) return null;
-  return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
-}
-
-export function parseCidr(cidr) {
-  const [ip, bitsRaw] = String(cidr).trim().split('/');
-  const base = ipv4ToInt(ip);
-  if (base === null) return null;
-  const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
-  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return null;
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  const start = (base & mask) >>> 0;
-  return { start, end: (start + (2 ** (32 - bits) - 1)) >>> 0, bits, cidr };
-}
-
-export function cidrContains(cidr, ip) {
-  const n = typeof ip === 'number' ? ip : ipv4ToInt(ip);
-  const c = typeof cidr === 'string' ? parseCidr(cidr) : cidr;
-  if (n === null || !c) return false;
-  return n >= c.start && n <= c.end;
-}
+// Geography primitives: dual-stack CIDR math (via src/tcpip.mjs), distance,
+// the RTT floor falsifier, region anchors.
+export {
+  cidrContains,
+  cidrContains6,
+  compressIpv6,
+  expandIpv6Hex,
+  intToIpv4,
+  ipCidrContains,
+  ipFamily,
+  ipv4ToInt,
+  ipv6ToBigInt,
+  parseAddress,
+  parseCidr,
+  parseCidr6,
+  parseIpCidr,
+} from './tcpip.mjs';
 
 /** Great-circle distance in km. */
 export function haversineKm(a, b) {

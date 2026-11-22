@@ -1,6 +1,6 @@
 // Self-test. Offline assertions are strict (they gate the exit code); network checks
 // are tolerant, because a flaky upstream must not look like a broken tool.
-import { cidrContains, coordsFor, findRegionToken, fingerprintHost, haversineKm, ipv4ToInt, regionFromHostname, rttFloorMs, rttViolates } from '../src/geo.mjs';
+import { cidrContains, cidrContains6, coordsFor, findRegionToken, fingerprintHost, haversineKm, ipv4ToInt, ipv6ToBigInt, regionFromHostname, rttFloorMs, rttViolates } from '../src/geo.mjs';
 import { analyzeLatency, assemble, downgrade } from '../src/classify.mjs';
 import { isEntitled, loadCatalog, matchProvider, recordFact } from '../src/catalog.mjs';
 import { asnForIp, cloudRangeFor, runMeasurement } from '../src/sources.mjs';
@@ -44,6 +44,11 @@ console.log('--- offline: primitives ---');
 await t('ipv4ToInt', () => eq(ipv4ToInt('1.2.3.4'), 16909060));
 await t('cidrContains in', () => ok(cidrContains('1.1.1.0/24', '1.1.1.1')));
 await t('cidrContains out', () => ok(!cidrContains('1.1.1.0/24', '1.1.2.1')));
+await t('ipv6ToBigInt + cidrContains6', () => {
+  ok(ipv6ToBigInt('2607:6bc0::10') !== null);
+  ok(cidrContains6('2607:6bc0::/48', '2607:6bc0::10'));
+  ok(!cidrContains6('2607:6bc0::/48', '2606:4700::1'));
+});
 await t('haversine HEL->IAD ~7000km', () => {
   const d = haversineKm({ lat: 60.17, lon: 24.94 }, { lat: 38.95, lon: -77.45 });
   ok(Math.abs(d - 7000) < 700, `got ${d}`);
@@ -184,12 +189,23 @@ await soft('ASN lookup', async () => {
   ok(asn?.asn, 'no asn');
   console.log(`         ${ip} => AS${asn.asn} ${asn.org ?? ''} (${asn.country})`);
 });
-await soft('published cloud region match', async () => {
+await soft('ASN lookup (IPv6 via origin6.asn.cymru.com)', async () => {
+  const asn = await asnForIp('2607:6bc0::10');
+  ok(asn?.asn === 399358, `expected AS399358, got ${asn?.asn}`);
+  eq(asn.family, 'ipv6');
+  console.log(`         2607:6bc0::10 => AS${asn.asn} ${asn.org ?? ''} (${asn.country})`);
+});
+await soft('published cloud region match (IPv4)', async () => {
   const ip = chain?.addresses?.[0]?.ip;
   ok(ip, 'no ip');
   const c = await cloudRangeFor(ip);
   ok(c, 'no cloud prefix match');
   console.log(`         ${ip} => ${c.cloud}/${c.region} (${c.service})`);
+});
+await soft('published cloud region match (IPv6)', async () => {
+  const c = await cloudRangeFor('2600:1900:8000::1');
+  ok(c?.cloud === 'GCP' && c.family === 'ipv6', `unexpected IPv6 cloud match: ${JSON.stringify(c)}`);
+  console.log(`         2600:1900:8000::1 => ${c.cloud}/${c.region} (${c.service})`);
 });
 await soft('globalping probe', async () => {
   const m = await runMeasurement({ target: '1.1.1.1', limit: 3 });

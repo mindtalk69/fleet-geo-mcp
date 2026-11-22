@@ -3,7 +3,7 @@
 // No TCP/43 whois, no port scanning, no authenticated calls except where the operator
 // explicitly declares an entitled host.
 import { resolveHost, txt } from './doh.mjs';
-import { ipv4ToInt, parseCidr } from './geo.mjs';
+import { parseAddress, parseCidr, parseCidr6 } from './geo.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -38,20 +38,30 @@ async function getJson(url, { timeout = 12000, headers = {} } = {}) {
 /* ---------------------------------------------------------------- ASN (Cymru) */
 
 export async function asnForIp(ip) {
-  const n = ipv4ToInt(ip);
-  if (n === null) return null; // IPv6 ASN lookup is out of scope for v1
-  const rev = ip.split('.').reverse().join('.');
+  const addr = parseAddress(ip);
+  if (!addr || addr.isUnspecified || addr.isLoopback) return null;
+
+  let queryName;
+  if (addr.family === 'ipv4') {
+    queryName = `${addr.normalized.split('.').reverse().join('.')}.origin.asn.cymru.com`;
+  } else if (addr.family === 'ipv6') {
+    queryName = `${addr.expandedHex32.split('').reverse().join('.')}.origin6.asn.cymru.com`;
+  } else {
+    return null;
+  }
+
   await paced('cymru', 250);
-  const rows = await txt(`${rev}.origin.asn.cymru.com`).catch(() => []);
+  const rows = await txt(queryName).catch(() => []);
   if (!rows.length) return null;
   const [asnRaw, prefix, country, registry, allocated] = rows[0].split('|').map((s) => s.trim());
-  const asn = Number(asnRaw);
+  // Multi-origin prefixes can return space-separated ASNs; take the primary origin ASN.
+  const asn = Number(String(asnRaw ?? '').split(/\s+/)[0]);
   if (!Number.isFinite(asn)) return null;
 
   await paced('cymru', 250);
   const nameRows = await txt(`AS${asn}.asn.cymru.com`).catch(() => []);
   const org = nameRows.length ? nameRows[0].split('|').map((s) => s.trim())[4] ?? null : null;
-  return { asn, prefix, country, registry, allocated, org };
+  return { asn, prefix, country, registry, allocated, org, family: addr.family };
 }
 
 /* ------------------------------------------------------------------- RDAP ---- */
@@ -65,9 +75,11 @@ const RDAP = {
 };
 
 export async function rdapFor(ip, registry) {
+  const addr = parseAddress(ip);
+  const target = addr?.normalized ?? String(ip).trim();
   const base = RDAP[String(registry || '').toLowerCase()] ?? RDAP.arin;
   await paced('rdap', 400);
-  const j = await getJson(base + encodeURIComponent(ip), {
+  const j = await getJson(base + encodeURIComponent(target), {
     timeout: 12000,
     headers: { accept: 'application/rdap+json' },
   });
@@ -92,7 +104,8 @@ const CLOUD_TTL = 6 * 60 * 60_000;
 
 async function loadCloudRanges() {
   if (cloudCache && Date.now() - cloudLoadedAt < CLOUD_TTL) return cloudCache;
-  const entries = [];
+  const entriesV4 = [];
+  const entriesV6 = [];
   const notes = [];
 
   const [aws, gcp] = await Promise.allSettled([
@@ -103,37 +116,54 @@ async function loadCloudRanges() {
   if (aws.status === 'fulfilled') {
     for (const p of aws.value.prefixes ?? []) {
       const c = parseCidr(p.ip_prefix);
-      if (c) entries.push({ ...c, cloud: 'AWS', region: p.region, service: p.service, source: 'aws ip-ranges.json' });
+      if (c) entriesV4.push({ ...c, cloud: 'AWS', region: p.region, service: p.service, source: 'aws ip-ranges.json' });
+    }
+    for (const p of aws.value.ipv6_prefixes ?? []) {
+      const c = parseCidr6(p.ipv6_prefix);
+      if (c) entriesV6.push({ ...c, cloud: 'AWS', region: p.region, service: p.service, source: 'aws ip-ranges.json' });
     }
     notes.push(`aws ip-ranges.json ${aws.value.createDate ?? ''}`.trim());
   } else notes.push(`AWS ranges unavailable: ${aws.reason?.message}`);
 
   if (gcp.status === 'fulfilled') {
     for (const p of gcp.value.prefixes ?? []) {
-      const cidr = p.ipv4Prefix;
-      if (!cidr) continue;
-      const c = parseCidr(cidr);
-      if (c) entries.push({ ...c, cloud: 'GCP', region: p.scope, service: p.service, source: 'gstatic cloud.json' });
+      if (p.ipv4Prefix) {
+        const c = parseCidr(p.ipv4Prefix);
+        if (c) entriesV4.push({ ...c, cloud: 'GCP', region: p.scope, service: p.service, source: 'gstatic cloud.json' });
+      }
+      if (p.ipv6Prefix) {
+        const c = parseCidr6(p.ipv6Prefix);
+        if (c) entriesV6.push({ ...c, cloud: 'GCP', region: p.scope, service: p.service, source: 'gstatic cloud.json' });
+      }
     }
     notes.push('gstatic cloud.json');
   } else notes.push(`GCP ranges unavailable: ${gcp.reason?.message}`);
 
-  cloudCache = { entries, notes, loadedAt: new Date().toISOString() };
+  cloudCache = { entries: entriesV4, entriesV4, entriesV6, notes, loadedAt: new Date().toISOString() };
   cloudLoadedAt = Date.now();
   return cloudCache;
 }
 
-/** Longest-prefix match against the cloud's OWN published table. This outranks any geoIP DB. */
+/** Longest-prefix match against the cloud's OWN published IPv4 + IPv6 tables. Outranks any geoIP DB. */
 export async function cloudRangeFor(ip) {
-  const n = ipv4ToInt(ip);
-  if (n === null) return null;
-  const { entries } = await loadCloudRanges();
+  const addr = parseAddress(ip);
+  if (!addr || addr.isUnspecified || addr.isLoopback) return null;
+  const { entriesV4, entriesV6 } = await loadCloudRanges();
+
   let best = null;
-  for (const e of entries) {
-    if (n >= e.start && n <= e.end && (!best || e.bits > best.bits)) best = e;
+  if (addr.family === 'ipv4') {
+    const n = addr.int;
+    for (const e of entriesV4) {
+      if (n >= e.start && n <= e.end && (!best || e.bits > best.bits)) best = e;
+    }
+  } else if (addr.family === 'ipv6') {
+    const n = addr.bigint;
+    for (const e of entriesV6) {
+      if (n >= e.start && n <= e.end && (!best || e.bits > best.bits)) best = e;
+    }
   }
   if (!best) return null;
-  return { cloud: best.cloud, region: best.region, service: best.service, prefix: best.cidr, source: best.source };
+  return { cloud: best.cloud, region: best.region, service: best.service, prefix: best.cidr, family: best.family, source: best.source };
 }
 
 /* --------------------------------------------------------------- PeeringDB --- */

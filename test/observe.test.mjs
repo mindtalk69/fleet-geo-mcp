@@ -57,14 +57,17 @@ await t('strace: connect, SNI and both sendmmsg DNS datagrams', async () => {
     `103 write(1</dev/pts/0>, "\\x4f\\x4b", 2) = 2`,
   ].join('\n');
   const r = parseStrace(text);
-  assert.deepEqual(r.connects, [{ ip: '104.18.3.115', port: 443 }, { ip: '2606:4700::6812:373', port: 443 }]);
+  assert.deepEqual(r.connects.map(({ ip, port, family }) => ({ ip, port, family })), [
+    { ip: '104.18.3.115', port: 443, family: 'ipv4' },
+    { ip: '2606:4700::6812:373', port: 443, family: 'ipv6' },
+  ]);
   assert.deepEqual(r.sni, [{ ip: '104.18.3.115', port: 443, host: 'api.example.com' }]);
   assert.deepEqual(r.dns.map((d) => d.name), ['openrouter.ai', 'cdn.example.net']);
 });
 
 await t('strace -xx: hex-escaped connect addresses are decoded (loopback recognised)', async () => {
   const r = parseStrace(`9 connect(3<TCP:[0]>, {sa_family=AF_INET, sin_port=htons(8787), sin_addr=inet_addr("${hex(Buffer.from('127.0.0.1'))}")}, 16) = 0`);
-  assert.deepEqual(r.connects, [{ ip: '127.0.0.1', port: 8787 }]);
+  assert.deepEqual(r.connects.map(({ ip, port }) => ({ ip, port })), [{ ip: '127.0.0.1', port: 8787 }]);
 });
 
 await t('proxy close() resolves while a tunnel is still open', async () => {
@@ -83,12 +86,14 @@ await t('proxy close() resolves while a tunnel is still open', async () => {
 });
 
 await t('socket tables: ss (Linux), lsof (macOS), netstat (Windows)', async () => {
-  assert.deepEqual(parseSs('ESTAB 0 0 10.0.0.5:40000 104.18.3.115:443 users:(("node",pid=4242,fd=21))\nESTAB 0 0 [::1]:1 [::ffff:1.2.3.4]:443 users:(("x",pid=7,fd=3))'),
+  const slim = (rows) => rows.filter((r) => r.state === 'established').map(({ ip, port, pid }) => ({ ip, port, pid }));
+  assert.deepEqual(slim(parseSs('ESTAB 0 0 10.0.0.5:40000 104.18.3.115:443 users:(("node",pid=4242,fd=21))\nESTAB 0 0 [::1]:1 [::ffff:1.2.3.4]:443 users:(("x",pid=7,fd=3))')),
     [{ ip: '104.18.3.115', port: 443, pid: 4242 }, { ip: '1.2.3.4', port: 443, pid: 7 }]);
-  assert.deepEqual(parseLsof('p4242\nf21\nn10.0.0.5:40000->104.18.3.115:443\np99\nn[::1]:5->[2606:4700::1]:443'),
+  assert.deepEqual(slim(parseLsof('p4242\nf21\nn10.0.0.5:40000->104.18.3.115:443\np99\nn[::1]:5->[2606:4700::1]:443')),
     [{ ip: '104.18.3.115', port: 443, pid: 4242 }, { ip: '2606:4700::1', port: 443, pid: 99 }]);
-  assert.deepEqual(parseNetstat('  Proto  Local  Foreign  State  PID\r\n  TCP    10.0.0.5:51234    104.18.3.115:443    ESTABLISHED     1234\r\n  TCP    [::1]:5    [2606:4700::1]:443    ESTABLISHED     88\r\n  TCP    0.0.0.0:135    0.0.0.0:0    LISTENING    900'),
-    [{ ip: '104.18.3.115', port: 443, pid: 1234 }, { ip: '2606:4700::1', port: 443, pid: 88 }]);
+  const ns = parseNetstat('  Proto  Local  Foreign  State  PID\r\n  TCP    10.0.0.5:51234    104.18.3.115:443    ESTABLISHED     1234\r\n  TCP    [::1]:5    [2606:4700::1]:443    ESTABLISHED     88\r\n  TCP    0.0.0.0:135    0.0.0.0:0    LISTENING    900');
+  assert.deepEqual(slim(ns), [{ ip: '104.18.3.115', port: 443, pid: 1234 }, { ip: '2606:4700::1', port: 443, pid: 88 }]);
+  assert.equal(ns.find((r) => r.pid === 900)?.state, 'listen');
 });
 
 await t('process tree from ps and Windows CSV', async () => {
@@ -138,7 +143,7 @@ await t('summarize: SNI names an IP; unnamed IPs kept; loopback and DNS dropped'
   });
   assert.equal(s.verdict, 'OBSERVED');
   assert.deepEqual(s.hosts.map((h) => [h.host, h.ips, h.via]), [['openrouter.ai', ['104.18.3.115'], ['tls-sni']]]);
-  assert.deepEqual(s.unnamedConnections, [{ ip: '9.9.9.9', port: 443, via: 'socket-table' }]);
+  assert.deepEqual(s.unnamedConnections, [{ ip: '9.9.9.9', port: 443, via: 'socket-table', family: 'ipv4' }]);
   assert.deepEqual(s.dnsQuestions, ['openrouter.ai']);
   assert.equal(s.plane, 'CONTROL');
 });
