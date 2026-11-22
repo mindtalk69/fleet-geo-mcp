@@ -124,6 +124,13 @@ IPs of each lane's latest saved run without running any CLI (no model calls); th
 file is kept and a `-relocated.json` file is added. agent2mind reads these files to show
 which hosts each agent really calls.
 
+**Measured edge pins.** For each observed edge host (up to three per lane), the tool reads
+the PoP the CDN itself reports (`cf-ray`, `x-amz-cf-pop`, ...) with one credential-free
+request to a host that lane was seen calling, and maps it through `IATA_COORDS`. When no
+RFC 8805 geofeed pin exists, that measured PoP becomes `mapPins.edge` (`precision: "pop"`).
+It is where TLS ends, near the caller, never the inference origin; `mapPins.origin` stays
+null until the origin is anchored.
+
 **Gateway follow.** Some CLIs never leave the machine themselves: `hermes` hands each
 request to its own daemon on `127.0.0.1:34101`. When a CLI connects to a loopback port,
 the tool finds the process listening there (never its own proxy) and records that

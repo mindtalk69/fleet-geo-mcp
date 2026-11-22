@@ -567,17 +567,33 @@ async function toolObserveEndpoints(args) {
   return { results, savedTo: file };
 }
 
-/** Label every recorded destination IP (EDGE / ENDPOINT / UNKNOWN) and locate each host. Passive lookups only. */
+const EDGE_POP_PROBES_PER_LANE = 3;
+
+/**
+ * Label every recorded destination IP (EDGE / ENDPOINT / UNKNOWN) and locate each host.
+ * For edge hosts it also reads the PoP the CDN reports (cf-ray, x-amz-cf-pop, ...): one
+ * credential-free request to a host this lane's CLI was observed calling, so it stays inside
+ * what the fleet already does. A measured PoP fills mapPins.edge when no geofeed pin exists.
+ */
 async function classifyObservation(r) {
+  let popProbes = 0;
   for (const h of r.hosts ?? []) {
     h.ipLocations = await Promise.all((h.ips ?? []).slice(0, 4).map(ipCard));
     const card = await locateCore({ baseUrl: `https://${h.host}`, deep: false }).catch((e) => ({ error: e.message }));
+    const mapPins = { edge: card.mapPins?.edge ?? null, origin: card.mapPins?.origin ?? null };
+    const isEdge = h.ipLocations.some((l) => l.plane === 'EDGE');
+    if (isEdge && !mapPins.edge && h.port === 443 && popProbes < EDGE_POP_PROBES_PER_LANE) {
+      popProbes++;
+      const probe = await probeEdgeHeaders(`https://${h.host}/`).catch(() => null);
+      if (probe?.edgePin) mapPins.edge = { ...probe.edgePin, measuredAt: new Date().toISOString() };
+      if (probe?.edge?.pop) h.edgePop = { pop: probe.edge.pop, vendor: probe.edge.vendor, city: probe.edge.popCity, header: probe.edge.header };
+    }
     h.locate = {
       confidence: card.confidence ?? null,
       edge: card.planes?.edge?.operator ?? null,
       origin: card.planes?.origin ?? null,
       location: card.location ?? null,
-      mapPins: card.mapPins ?? null,
+      mapPins,
       error: card.error ?? null,
     };
   }
