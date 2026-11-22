@@ -177,6 +177,10 @@ export const EDGE_ASNS = {
   15169: 'Google', 396982: 'Google Cloud', 8075: 'Microsoft/Azure', 22822: 'Limelight',
   60068: 'Datacamp/CDN77', 19551: 'Incapsula/Imperva', 45102: 'Alibaba Cloud CDN',
   132203: 'Tencent Cloud', 396986: 'ByteDance', 13414: 'Twitter/X', 2906: 'Netflix',
+  // Own anycast front ends, measured with probe_latency on 2026-11-22: one Anthropic
+  // address (160.79.104.10) answered in 1.36 ms from Helsinki and 31.5 ms from Los Angeles,
+  // and api.meta.ai answered in 0.67 ms from Helsinki. No single site can do either.
+  399358: 'Anthropic (anycast front end)', 32934: 'Meta (edge network)',
 };
 
 // Hostname suffixes that name the operator before you ever resolve an IP.

@@ -10,6 +10,7 @@ import {
   descendants, laneCommand, observeLane, parseClientHelloSni, parseDnsQuestion, parseLsof, parseNetstat,
   parseProcessTable, parseSs, parseStrace, startProxy, summarize,
 } from '../src/observe.mjs';
+import { EDGE_ASNS } from '../src/geo.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -166,6 +167,11 @@ await t('observeLane end to end: a child that honours HTTPS_PROXY is observed', 
   assert.equal(r.honoredProxy, true);
   assert.equal(r.hosts[0]?.host, 'probe.invalid');
   assert.deepEqual(r.hosts[0].via, ['proxy-connect']);
+});
+
+await t('measured anycast front ends (Anthropic, Meta) are edges, never endpoints', async () => {
+  assert.ok(EDGE_ASNS[399358], 'Anthropic AS399358');
+  assert.ok(EDGE_ASNS[32934], 'Meta AS32934');
 });
 
 console.log(`\nobserve: ${pass} passed, ${fail} failed`);

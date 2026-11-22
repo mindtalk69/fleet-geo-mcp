@@ -15,7 +15,7 @@ import { isEntitled, loadCatalog, loadConfig, matchProvider, recordFact, stalene
 import { EDGE_ASNS, parseAddress } from './src/geo.mjs';
 import { ConnectionMib } from './src/tcpip.mjs';
 import { descendants, laneCommand, observeLane, processTable, socketSnapshot } from './src/observe.mjs';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = { name: 'fleet-geo', version: '1.2.0' };
@@ -245,6 +245,7 @@ const TOOLS = [
       properties: {
         lane: { type: 'string', description: 'Lane id from fleet.json (e.g. "W7"), or "all".' },
         run: { type: 'boolean', description: 'true to execute (spends one model call per lane). Default false: plan only.' },
+        relocate: { type: 'boolean', description: 'true to re-classify the IPs of the latest saved run per lane without running any CLI (no model calls).' },
         timeout_s: { type: 'integer', minimum: 10, maximum: 600, description: 'Per-lane timeout (default 120).' },
         locate: { type: 'boolean', description: 'Also run locate_model on each observed host (default true).' },
       },
@@ -490,14 +491,15 @@ async function toolObserveEndpoints(args) {
   const wanted = String(args.lane ?? '').toLowerCase();
   const lanes = wanted === 'all' ? all : all.filter((l) => l.lane.toLowerCase() === wanted);
   if (!lanes.length) return { error: 'UNKNOWN_LANE', detail: `no lane "${args.lane}" in fleet.json`, lanes: all.map((l) => l.lane) };
+  const dir = path.join(ROOT, 'observations');
+  if (args.relocate === true) return relocateObservations(dir, lanes, wanted);
   if (args.run !== true) {
     return {
       plan: lanes.map((l) => ({ lane: l.lane, cli: l.cli, command: laneCommand(l)?.argv.join(' ') ?? null, fixture: l.observe?.fixture ?? null })),
-      note: 'Plan only. Pass run:true to execute; each lane spends one model call.',
+      note: 'Plan only. Pass run:true to execute; each lane spends one model call. relocate:true re-classifies the IPs of the latest saved run without running any CLI.',
     };
   }
   const results = [];
-  const dir = path.join(ROOT, 'observations');
   mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${wanted}.json`);
   const save = () => writeFileSync(file, `${JSON.stringify({ observedAt: new Date().toISOString(), platform: process.platform, results }, null, 2)}\n`);
@@ -505,23 +507,57 @@ async function toolObserveEndpoints(args) {
     process.stderr.write(`observe ${lane.lane} (${lane.cli}) ...\n`);
     const r = await observeLane(lane, { timeoutMs: (args.timeout_s ?? 120) * 1000 });
     process.stderr.write(`observe ${lane.lane} done: ${r.verdict ?? r.error} exit=${r.exitCode} timedOut=${r.timedOut}\n`);
-    if (args.locate !== false) {
-      for (const h of r.hosts ?? []) {
-        h.ipLocations = await Promise.all(h.ips.slice(0, 4).map(ipCard));
-        const card = await locateCore({ baseUrl: `https://${h.host}`, deep: false }).catch((e) => ({ error: e.message }));
-        h.locate = {
-          confidence: card.confidence ?? null,
-          edge: card.planes?.edge?.operator ?? null,
-          origin: card.planes?.origin ?? null,
-          location: card.location ?? null,
-          error: card.error ?? null,
-        };
-      }
-      for (const u of r.unnamedConnections ?? []) Object.assign(u, await ipCard(u.ip));
-    }
+    if (args.locate !== false) await classifyObservation(r);
     results.push(r);
     save();
   }
+  return { results, savedTo: file };
+}
+
+/** Label every recorded destination IP (EDGE / ENDPOINT / UNKNOWN) and locate each host. Passive lookups only. */
+async function classifyObservation(r) {
+  for (const h of r.hosts ?? []) {
+    h.ipLocations = await Promise.all((h.ips ?? []).slice(0, 4).map(ipCard));
+    const card = await locateCore({ baseUrl: `https://${h.host}`, deep: false }).catch((e) => ({ error: e.message }));
+    h.locate = {
+      confidence: card.confidence ?? null,
+      edge: card.planes?.edge?.operator ?? null,
+      origin: card.planes?.origin ?? null,
+      location: card.location ?? null,
+      error: card.error ?? null,
+    };
+  }
+  for (const u of r.unnamedConnections ?? []) Object.assign(u, await ipCard(u.ip));
+  return r;
+}
+
+/**
+ * Re-classify the newest saved run of each lane without running any CLI (no model calls).
+ * The original observation is kept; a new file carries the same startedAt plus relocatedAt.
+ */
+async function relocateObservations(dir, lanes, wanted) {
+  const latest = new Map();
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort(); } catch { /* none yet */ }
+  for (const f of files) {
+    let data;
+    try { data = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+    for (const r of data.results ?? []) {
+      if (!r?.lane || r.error) continue;
+      const prev = latest.get(r.lane);
+      if (!prev || String(prev.startedAt) <= String(r.startedAt)) latest.set(r.lane, r);
+    }
+  }
+  const results = [];
+  for (const lane of lanes) {
+    const r = latest.get(lane.lane);
+    if (!r) { results.push({ lane: lane.lane, cli: lane.cli, error: 'NO_SAVED_RUN', detail: 'run observe_endpoints with run:true first' }); continue; }
+    process.stderr.write(`relocate ${lane.lane} (${lane.cli}) ...\n`);
+    results.push({ ...(await classifyObservation(structuredClone(r))), relocatedAt: new Date().toISOString() });
+  }
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${wanted}-relocated.json`);
+  writeFileSync(file, `${JSON.stringify({ observedAt: new Date().toISOString(), platform: process.platform, relocated: true, results: results.filter((x) => !x.error) }, null, 2)}\n`);
   return { results, savedTo: file };
 }
 

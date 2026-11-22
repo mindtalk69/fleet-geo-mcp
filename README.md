@@ -94,7 +94,10 @@ Nothing is decrypted: the hostname comes from the CONNECT line, the cleartext SN
 DNS question. Every destination IP then gets `lookup_prefix`-style facts and an `EDGE` /
 `ENDPOINT` label. The result is CONTROL-plane evidence, saved under `observations/`.
 It ends at the TLS edge and never proves the origin. Without `run:true` it only prints
-the commands, because each lane costs one model call.
+the commands, because each lane costs one model call. `relocate:true` re-classifies the
+IPs of each lane's latest saved run without running any CLI (no model calls); the original
+file is kept and a `-relocated.json` file is added. agent2mind reads these files to show
+which hosts each agent really calls.
 
 ## The answer shape
 
@@ -189,9 +192,10 @@ the model, and what their documentation claims.
 ```powershell
 cd C:\DEV\fleet-geo-mcp
 node server.mjs --selftest        # 41 checks; offline strict, network tolerant
-node test/observe.test.mjs        # 11 observe_endpoints checks (or: npm test for both)
-node server.mjs --tool observe_endpoints --args '{"lane":"all"}'            # plan only
-node server.mjs --tool observe_endpoints --args '{"lane":"W7","run":true}'  # one model call
+node test/observe.test.mjs        # 12 observe_endpoints checks (or: npm test for all suites)
+node server.mjs --tool observe_endpoints --args '{"lane":"all"}'                 # plan only
+node server.mjs --tool observe_endpoints --args '{"lane":"W7","run":true}'       # one model call
+node server.mjs --tool observe_endpoints --args '{"lane":"all","relocate":true}' # re-classify, no model calls
 node server.mjs --list-tools
 node server.mjs --tool fleet_status --args '{"limit":3}'
 node server.mjs --tool locate_model --args '{"lane":"W7"}'
