@@ -12,7 +12,8 @@ import { resolveHost } from './src/doh.mjs';
 import { asnForIp, certSubdomains, cloudRangeFor, loadCloudRanges, peeringdbFor, probeEdgeHeaders, rdapFor, runMeasurement } from './src/sources.mjs';
 import { analyzeLatency, assemble } from './src/classify.mjs';
 import { isEntitled, loadCatalog, loadConfig, matchProvider, recordFact, staleness } from './src/catalog.mjs';
-import { EDGE_ASNS, parseAddress } from './src/geo.mjs';
+import { EDGE_ASNS, coordsFor, parseAddress } from './src/geo.mjs';
+import { extractRdapScopes, lookupGeofeed } from './src/geofeed.mjs';
 import { ConnectionMib } from './src/tcpip.mjs';
 import { nativeStatus } from './src/native.mjs';
 import { descendants, laneCommand, observeLane, processTable, socketSnapshot } from './src/observe.mjs';
@@ -40,7 +41,10 @@ async function factsForIp(ip) {
   const normIp = parsed?.normalized ?? String(ip).trim();
   const [asn, cloud] = await Promise.all([asnForIp(normIp).catch(() => null), cloudRangeFor(normIp).catch(() => null)]);
   const rdap = asn?.registry ? await rdapFor(normIp, asn.registry).catch(() => null) : null;
-  return { ip: normIp, family: parsed?.family ?? null, asn, cloud, rdap, edge: Boolean(asn && EDGE_ASNS[asn.asn]) };
+  const geofeed = rdap?.geofeedUrl
+    ? await lookupGeofeed(normIp, { feedUrl: rdap.geofeedUrl, scopes: extractRdapScopes(rdap) }).catch(() => null)
+    : null;
+  return { ip: normIp, family: parsed?.family ?? null, asn, cloud, rdap, geofeed, edge: Boolean(asn && EDGE_ASNS[asn.asn]) };
 }
 
 const chainCache = new Map();
@@ -274,6 +278,21 @@ const TOOLS = [
     },
   },
   {
+    name: 'lookup_geofeed',
+    title: 'Look up an IP via RFC 8805 geofeed',
+    description:
+      'Discover and query a network operator\'s self-published RFC 8805 IP geolocation feed (via RDAP links/remarks per RFC 9092/9632, or an explicit HTTPS feed_url). Enforces RFC 8805 §3.1 HTTPS-only and §3.2 authority verification against the linking RDAP IP block, returning country/region/city and honest map coordinates.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ip: { type: 'string', description: 'IPv4 or IPv6 address.' },
+        feed_url: { type: 'string', description: 'Optional explicit HTTPS RFC 8805 CSV URL (if omitted, discovered from RDAP).' },
+      },
+      required: ['ip'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'explain_rules',
     title: 'Explain the rules',
     description: 'Return the source precedence, plane definitions, confidence states and the RTT falsifier used by every other tool.',
@@ -459,7 +478,7 @@ async function toolInspectEdge(args) {
 async function ipCard(ip) {
   const f = await factsForIp(ip).catch(() => null);
   if (!f) return { ip, error: 'lookup-failed' };
-  if (!f.asn && !f.cloud) {
+  if (!f.asn && !f.cloud && !f.geofeed?.matched) {
     return {
       ip: f.ip,
       family: f.family,
@@ -467,10 +486,30 @@ async function ipCard(ip) {
       org: null,
       registeredCountry: null,
       cloudRegion: null,
+      geofeed: null,
+      pin: null,
       plane: 'UNKNOWN',
-      meaning: 'No ASN or cloud-prefix data; edge or endpoint undetermined.',
+      meaning: 'No ASN, cloud-prefix, or RFC 8805 geofeed data; edge or endpoint undetermined.',
     };
   }
+  const gf = f.geofeed?.matched && !f.geofeed.noGeolocation ? f.geofeed : null;
+  const plane = f.edge ? 'EDGE' : 'ENDPOINT';
+  const pinCoords = f.edge
+    ? (gf?.coords ?? null)
+    : f.cloud?.region && !/^global$/i.test(f.cloud.region)
+      ? coordsFor({ region: f.cloud.region })
+      : (gf?.coords ?? null);
+  const pin = pinCoords
+    ? {
+        lat: pinCoords.lat,
+        lon: pinCoords.lon,
+        place: gf?.city ?? pinCoords.place ?? f.cloud?.region ?? gf?.country ?? null,
+        country: gf?.country ?? pinCoords.country ?? null,
+        plane,
+        precision: pinCoords.precision ?? (gf?.city ? 'city' : 'region'),
+        source: f.cloud && !f.edge ? f.cloud.source : gf ? `RFC 8805 geofeed (${gf.feedUrl})` : null,
+      }
+    : null;
   return {
     ip: f.ip,
     family: f.family,
@@ -478,12 +517,25 @@ async function ipCard(ip) {
     org: f.asn?.org ?? null,
     registeredCountry: f.asn?.country ?? null,
     cloudRegion: f.cloud ? `${f.cloud.cloud}/${f.cloud.region}` : null,
-    plane: f.edge ? 'EDGE' : 'ENDPOINT',
+    geofeed: gf
+      ? {
+          prefix: gf.prefix,
+          country: gf.country,
+          region: gf.region,
+          city: gf.city,
+          authorityVerified: gf.authorityVerified,
+          feedUrl: gf.feedUrl,
+        }
+      : null,
+    pin,
+    plane,
     meaning: f.edge
       ? 'CDN/anycast address: the TLS edge nearest this machine, not where inference runs.'
       : f.cloud
         ? 'Unicast cloud address in a published region: the endpoint this CLI reached is in that region.'
-        : 'Unicast address with registration data only: country of registration, not a measured location.',
+        : gf
+          ? 'Unicast address with operator-published RFC 8805 geofeed location.'
+          : 'Unicast address with registration data only: country of registration, not a measured location.',
   };
 }
 
@@ -525,6 +577,7 @@ async function classifyObservation(r) {
       edge: card.planes?.edge?.operator ?? null,
       origin: card.planes?.origin ?? null,
       location: card.location ?? null,
+      mapPins: card.mapPins ?? null,
       error: card.error ?? null,
     };
   }
@@ -614,6 +667,49 @@ async function toolInspectConnections(args) {
   return out;
 }
 
+async function toolLookupGeofeed(args) {
+  const parsed = parseAddress(args.ip);
+  const ip = parsed?.normalized ?? String(args.ip ?? '').trim();
+  const asn = await asnForIp(ip).catch(() => null);
+  const rdap = asn?.registry ? await rdapFor(ip, asn.registry).catch(() => null) : null;
+  const feedUrl = args.feed_url ?? rdap?.geofeedUrl ?? null;
+  const edge = Boolean(asn && EDGE_ASNS[asn.asn]);
+
+  if (!feedUrl) {
+    return {
+      ip,
+      family: parsed?.family ?? null,
+      asn,
+      edge,
+      geofeedUrl: null,
+      matched: false,
+      note: 'No RFC 8805 geofeed URL advertised in this IP\'s RDAP record. Pass feed_url explicitly to query a known HTTPS geofeed.',
+    };
+  }
+
+  const scopes = rdap && !args.feed_url ? extractRdapScopes(rdap) : null;
+  const result = await lookupGeofeed(ip, { feedUrl, scopes });
+  return {
+    ip,
+    family: parsed?.family ?? null,
+    asn,
+    edge,
+    plane: edge ? 'EDGE' : 'ENDPOINT',
+    ...result,
+    mapPin: result?.matched && !result.noGeolocation && result.coords
+      ? {
+          lat: result.coords.lat,
+          lon: result.coords.lon,
+          place: result.city ?? result.coords.place ?? result.country,
+          country: result.country ?? result.coords.country ?? null,
+          plane: edge ? 'EDGE' : 'ORIGIN',
+          precision: result.coords.precision ?? (result.city ? 'city' : 'country'),
+          source: `RFC 8805 geofeed (${feedUrl})`,
+        }
+      : null,
+  };
+}
+
 async function toolRecordFact(args) {
   return recordFact(args);
 }
@@ -629,12 +725,13 @@ async function toolExplainRules() {
     sources: [
       'DoH: dns.google / cloudflare-dns.com (dual-stack A + AAAA + CNAME)',
       'ASN: Team Cymru DNS (origin.asn.cymru.com IPv4, origin6.asn.cymru.com IPv6, AS<asn>.asn.cymru.com)',
-      'RDAP: registry-specific (arin, ripe, apnic, lacnic, afrinic; IPv4 + IPv6)',
+      'RDAP: registry-specific (arin, ripe, apnic, lacnic, afrinic; IPv4 + IPv6) + RFC 9092/9632 geofeed discovery',
       'Cloud prefixes: AWS ip-ranges.json (IPv4 + IPv6), gstatic cloud.json (IPv4 + IPv6)',
+      'Self-published geofeeds: RFC 8805 UTF-8 CSV feeds with §3.1 HTTPS-only and §3.2 RDAP authority verification',
       'Facilities: PeeringDB netfac',
-      'Certificates: crt.sh',
-      'Probes: globalping.io',
-      'Local TCP/UDP MIB: RFC 1792-modeled dual-stack connection & unspecified-network listener tables (ss / lsof / netstat)',
+      'Certificates: crt.sh (RFC 6962)',
+      'Probes: globalping.io + RFC 9293 TCP SYN->SYN-ACK RTT vs HTTP TTFB in inspect_edge',
+      'Local TCP/UDP MIB: RFC 1792-modeled dual-stack connection & unspecified-network listener tables (Rust N-API or ss / lsof / netstat)',
     ],
   };
 }
@@ -644,6 +741,7 @@ const HANDLERS = {
   fleet_status: toolFleetStatus,
   trace_endpoint: toolTraceEndpoint,
   lookup_prefix: toolLookupPrefix,
+  lookup_geofeed: toolLookupGeofeed,
   find_regional_endpoints: toolFindRegionalEndpoints,
   probe_latency: toolProbeLatency,
   inspect_edge: toolInspectEdge,

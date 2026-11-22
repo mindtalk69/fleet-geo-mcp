@@ -2,8 +2,12 @@
 // DNS ASN service, RDAP, published cloud prefix tables, PeeringDB, crt.sh, globalping.
 // No TCP/43 whois, no port scanning, no authenticated calls except where the operator
 // explicitly declares an entitled host.
+import http from 'node:http';
+import https from 'node:https';
+import { performance } from 'node:perf_hooks';
 import { resolveHost, txt } from './doh.mjs';
-import { parseAddress, parseCidr, parseCidr6 } from './geo.mjs';
+import { IATA_COORDS, coordsFor, parseAddress, parseCidr, parseCidr6, round } from './geo.mjs';
+import { extractGeofeedUrl, extractRdapScopes } from './geofeed.mjs';
 import { getNative } from './native.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -92,6 +96,12 @@ export async function rdapFor(ip, registry) {
     name: j.name ?? null,
     country: j.country ?? null,
     type: j.type ?? null,
+    startAddress: j.startAddress ?? null,
+    endAddress: j.endAddress ?? null,
+    cidrs: (j.cidr0_cidrs ?? [])
+      .map((c) => ((c.v4prefix ?? c.v6prefix) && Number.isInteger(c.length) ? `${c.v4prefix ?? c.v6prefix}/${c.length}` : null))
+      .filter(Boolean),
+    geofeedUrl: extractGeofeedUrl(j),
     entities: [...new Set(entityNames)].slice(0, 6),
     remarks: (j.remarks ?? []).flatMap((r) => r.description ?? []).slice(0, 3),
   };
@@ -216,7 +226,7 @@ export async function peeringdbFor(asn, { limit = 12 } = {}) {
 /* ----------------------------------------------------------------- crt.sh ---- */
 
 const REGION_HINT =
-  /\b(eu|us|ap|jp|sg|cn|hk|in|au|de|ie|uk|fr|ca|br|ae|kr|tw|id|sea|ams|fra|sfo|nyc|iad|sin|tok|syd)\b/i;
+  /\b(eu|us|ap|jp|sg|cn|hk|in|au|de|ie|uk|fr|ca|br|ae|kr|tw|id|sea|ams|fra|sfo|nyc|iad|sin|tok|syd|origin|direct|regional)\b/i;
 
 export async function certSubdomains(domain, { limit = 200 } = {}) {
   await paced('crtsh', 1000);
@@ -299,49 +309,159 @@ export async function runMeasurement({ target, type = 'ping', limit = 6, locatio
 
 const SECRET_HEADERS = /^(authorization|proxy-authorization|x-api-key|api-key|cookie|set-cookie)$/i;
 
+/** Low-level timed HTTP(S) probe: captures RFC 9293 TCP SYN->SYN-ACK RTT vs TLS vs TTFB. */
+function timedHttpRequest(u, method, timeout) {
+  return new Promise((resolve, reject) => {
+    const mod = u.protocol === 'http:' ? http : https;
+    const tStart = performance.now();
+    let tLookup = null;
+    let tConnect = null;
+    let tTls = null;
+    let remoteAddress = null;
+
+    const req = mod.request(
+      u,
+      {
+        method,
+        headers: { range: 'bytes=0-0', 'user-agent': 'fleet-geo-mcp/1.2', connection: 'close' },
+        agent: false, // fresh TCP handshake so SYN->SYN-ACK RTT is measured honestly
+        timeout,
+      },
+      (res) => {
+        const tFirstByte = performance.now();
+        res.resume(); // discard body; headers + timing only
+        const headers = {};
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (SECRET_HEADERS.test(k)) continue;
+          headers[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v);
+        }
+        const dnsMs = tLookup !== null ? tLookup - tStart : null;
+        const tcpConnectBase = tLookup ?? tStart;
+        const edgeTcpRttMs = tConnect !== null ? tConnect - tcpConnectBase : null;
+        const tlsMs = tTls !== null && tConnect !== null ? tTls - tConnect : null;
+        const requestSentAt = tTls ?? tConnect ?? tStart;
+        const httpRttMs = tFirstByte - requestSentAt;
+        const ttfbMs = tFirstByte - tStart;
+        const backendDeltaMs = edgeTcpRttMs !== null ? Math.max(0, httpRttMs - edgeTcpRttMs) : null;
+
+        resolve({
+          status: res.statusCode ?? 0,
+          headers,
+          remoteIp: remoteAddress ? (parseAddress(remoteAddress)?.normalized ?? remoteAddress) : null,
+          timing: {
+            dnsMs: round(dnsMs, 2),
+            edgeTcpRttMs: round(edgeTcpRttMs, 2),
+            tlsMs: round(tlsMs, 2),
+            httpRttMs: round(httpRttMs, 2),
+            ttfbMs: round(ttfbMs, 2),
+            backendDeltaMs: round(backendDeltaMs, 2),
+            impliedEdgeMaxDistanceKm: edgeTcpRttMs !== null ? Math.round(edgeTcpRttMs * 100) : null,
+            impliedBackendMaxDistanceKm: backendDeltaMs !== null ? Math.round(backendDeltaMs * 100) : null,
+            note: 'edgeTcpRttMs is SYN->SYN-ACK to the TLS edge; backendDeltaMs mixes edge->origin transit and server processing time (upper bound only).',
+          },
+        });
+      },
+    );
+
+    req.on('socket', (sock) => {
+      sock.on('lookup', () => { tLookup = performance.now(); });
+      sock.on('connect', () => {
+        tConnect = performance.now();
+        remoteAddress = sock.remoteAddress ?? null;
+      });
+      sock.on('secureConnect', () => { tTls = performance.now(); });
+    });
+    req.on('timeout', () => req.destroy(new Error(`edge probe timeout after ${timeout}ms`)));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/** Extract a 3-letter IATA airport PoP code from common CDN edge headers. */
+export function extractEdgePop(headers = {}) {
+  const cfRay = headers['cf-ray'] ?? null;
+  if (cfRay) {
+    const code = cfRay.split('-').pop()?.toUpperCase();
+    return { vendor: 'Cloudflare', raw: cfRay, iata: /^[A-Z]{3}$/.test(code) ? code : null, header: 'cf-ray' };
+  }
+  const amzPop = headers['x-amz-cf-pop'] ?? null;
+  if (amzPop) {
+    const code = amzPop.slice(0, 3).toUpperCase();
+    return { vendor: 'AWS CloudFront', raw: amzPop, iata: /^[A-Z]{3}$/.test(code) ? code : null, header: 'x-amz-cf-pop' };
+  }
+  const fastly = headers['x-served-by'] ?? null;
+  if (fastly) {
+    const m = fastly.match(/-([A-Z]{3})\b/);
+    return { vendor: 'Fastly', raw: fastly, iata: m ? m[1] : null, header: 'x-served-by' };
+  }
+  const vercel = headers['x-vercel-id'] ?? null;
+  if (vercel) {
+    const m = vercel.match(/^([a-z]{3})\d?::/i);
+    return { vendor: 'Vercel Edge', raw: vercel, iata: m ? m[1].toUpperCase() : null, header: 'x-vercel-id' };
+  }
+  const fly = headers['fly-region'] ?? null;
+  if (fly) {
+    const code = fly.trim().slice(0, 3).toUpperCase();
+    return { vendor: 'Fly.io', raw: fly, iata: /^[A-Z]{3}$/.test(code) ? code : null, header: 'fly-region' };
+  }
+  const edgeLoc = headers['x-edge-location'] ?? null;
+  if (edgeLoc) {
+    const code = edgeLoc.trim().slice(0, 3).toUpperCase();
+    return { vendor: headers.server ?? 'CDN Edge', raw: edgeLoc, iata: /^[A-Z]{3}$/.test(code) ? code : null, header: 'x-edge-location' };
+  }
+  if (headers['x-azure-ref']) {
+    return { vendor: 'Azure Front Door', raw: headers['x-azure-ref'], iata: null, header: 'x-azure-ref' };
+  }
+  return { vendor: headers.server ?? null, raw: null, iata: null, header: null };
+}
+
 export async function probeEdgeHeaders(url, { timeout = 12000 } = {}) {
   const u = new URL(url.startsWith('http') ? url : `https://${url}`);
   await paced('edge', 500);
-  const init = { method: 'GET', headers: { range: 'bytes=0-0', 'user-agent': 'fleet-geo-mcp/1.0' }, redirect: 'manual', signal: AbortSignal.timeout(timeout) };
-  let res = await fetch(u, init);
+  let res = await timedHttpRequest(u, 'GET', timeout);
   if (res.status === 405 || res.status === 501) {
     await paced('edge', 500);
-    res = await fetch(u, { ...init, method: 'HEAD' });
+    res = await timedHttpRequest(u, 'HEAD', timeout);
   }
-  const headers = {};
-  for (const [k, v] of res.headers) {
-    if (SECRET_HEADERS.test(k)) continue;
-    headers[k.toLowerCase()] = v;
+  const { headers } = res;
+  const pop = extractEdgePop(headers);
+  const popCoords = pop.iata ? coordsFor({ iata: pop.iata }) : null;
+
+  const originHints = {};
+  for (const k of ['x-supabase-region', 'x-cloud-region', 'x-region', 'server-timing']) {
+    if (headers[k]) originHints[k] = headers[k];
   }
-  const cfRay = headers['cf-ray'] ?? null;
-  const cfPop = cfRay ? cfRay.split('-').pop() : null;
-  const cfPopCity = cfPop ? CLOUDFLARE_POP[cfPop] ?? null : null;
-  const amzPop = headers['x-amz-cf-pop'] ?? null;
 
   return {
     url: u.toString(),
     status: res.status,
+    remoteIp: res.remoteIp,
+    timing: res.timing,
     edge: {
-      vendor: cfRay ? 'Cloudflare' : amzPop ? 'AWS CloudFront' : headers['x-served-by'] ? 'Fastly' : headers.server ?? null,
-      pop: cfPop ?? amzPop ?? headers['x-served-by'] ?? null,
-      popCity: cfPopCity ?? (amzPop ? IATA[amzPop.slice(0, 3)] ?? null : null),
+      vendor: pop.vendor,
+      header: pop.header,
+      pop: pop.iata ?? pop.raw,
+      popRaw: pop.raw,
+      popCity: popCoords?.place ?? (pop.iata ? IATA_COORDS[pop.iata]?.place ?? null : null),
+      popCountry: popCoords?.country ?? null,
       server: headers.server ?? null,
       note: 'EDGE plane only: where TLS terminated, not where the model ran',
     },
+    edgePin: popCoords
+      ? {
+          lat: popCoords.lat,
+          lon: popCoords.lon,
+          place: popCoords.place,
+          country: popCoords.country,
+          iata: pop.iata,
+          plane: 'EDGE',
+          precision: 'pop',
+          source: `${pop.vendor} ${pop.header}`,
+        }
+      : null,
+    originHints: Object.keys(originHints).length ? originHints : null,
     headers,
   };
 }
-
-// Cloudflare PoP IATA codes -> city. Partial on purpose: unknown codes are reported raw.
-const CLOUDFLARE_POP = {
-  SIN: 'Singapore', HKG: 'Hong Kong', NRT: 'Tokyo', KIX: 'Osaka', ICN: 'Seoul', TPE: 'Taipei',
-  CGK: 'Jakarta', BOM: 'Mumbai', DEL: 'New Delhi', SYD: 'Sydney', MEL: 'Melbourne',
-  FRA: 'Frankfurt', AMS: 'Amsterdam', LHR: 'London', CDG: 'Paris', DUB: 'Dublin', MAD: 'Madrid',
-  MXP: 'Milan', WAW: 'Warsaw', ARN: 'Stockholm', IAD: 'Ashburn', EWR: 'Newark', ORD: 'Chicago',
-  DFW: 'Dallas', LAX: 'Los Angeles', SEA: 'Seattle', SJC: 'San Jose', MIA: 'Miami', YYZ: 'Toronto',
-  GRU: 'Sao Paulo', JNB: 'Johannesburg', DXB: 'Dubai', IST: 'Istanbul',
-};
-
-const IATA = { ...CLOUDFLARE_POP, IAD: 'Ashburn', CMH: 'Columbus', SFO: 'San Francisco' };
 
 export { loadCloudRanges };

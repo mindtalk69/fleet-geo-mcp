@@ -157,15 +157,111 @@ export const COUNTRY_COORDS = {
   PH: { lat: 14.6, lon: 120.98 }, NZ: { lat: -36.85, lon: 174.76 },
 };
 
-/** Coordinates for a region name, else its country, else null. */
-export function coordsFor({ region, country } = {}) {
+// Major CDN PoP IATA airport coordinates (EDGE plane: TLS termination sites, never origin).
+export const IATA_COORDS = {
+  // Asia-Pacific
+  SIN: { lat: 1.36, lon: 103.99, place: 'Singapore', country: 'SG' },
+  CGK: { lat: -6.13, lon: 106.66, place: 'Jakarta', country: 'ID' },
+  HKG: { lat: 22.31, lon: 113.92, place: 'Hong Kong', country: 'HK' },
+  NRT: { lat: 35.77, lon: 140.39, place: 'Tokyo', country: 'JP' },
+  HND: { lat: 35.55, lon: 139.78, place: 'Tokyo', country: 'JP' },
+  KIX: { lat: 34.43, lon: 135.24, place: 'Osaka', country: 'JP' },
+  ICN: { lat: 37.46, lon: 126.44, place: 'Seoul', country: 'KR' },
+  TPE: { lat: 25.08, lon: 121.23, place: 'Taipei', country: 'TW' },
+  BOM: { lat: 19.09, lon: 72.87, place: 'Mumbai', country: 'IN' },
+  DEL: { lat: 28.56, lon: 77.10, place: 'New Delhi', country: 'IN' },
+  MAA: { lat: 12.99, lon: 80.17, place: 'Chennai', country: 'IN' },
+  HYD: { lat: 17.24, lon: 78.43, place: 'Hyderabad', country: 'IN' },
+  SYD: { lat: -33.95, lon: 151.18, place: 'Sydney', country: 'AU' },
+  MEL: { lat: -37.67, lon: 144.84, place: 'Melbourne', country: 'AU' },
+  AKL: { lat: -37.01, lon: 174.79, place: 'Auckland', country: 'NZ' },
+  KUL: { lat: 2.75, lon: 101.71, place: 'Kuala Lumpur', country: 'MY' },
+  BKK: { lat: 13.69, lon: 100.75, place: 'Bangkok', country: 'TH' },
+  SGN: { lat: 10.82, lon: 106.65, place: 'Ho Chi Minh City', country: 'VN' },
+  MNL: { lat: 14.51, lon: 121.02, place: 'Manila', country: 'PH' },
+  // Europe
+  FRA: { lat: 50.03, lon: 8.57, place: 'Frankfurt', country: 'DE' },
+  AMS: { lat: 52.31, lon: 4.76, place: 'Amsterdam', country: 'NL' },
+  LHR: { lat: 51.47, lon: -0.45, place: 'London', country: 'GB' },
+  CDG: { lat: 49.01, lon: 2.55, place: 'Paris', country: 'FR' },
+  DUB: { lat: 53.42, lon: -6.27, place: 'Dublin', country: 'IE' },
+  MAD: { lat: 40.47, lon: -3.56, place: 'Madrid', country: 'ES' },
+  MXP: { lat: 45.63, lon: 8.72, place: 'Milan', country: 'IT' },
+  WAW: { lat: 52.17, lon: 20.97, place: 'Warsaw', country: 'PL' },
+  ARN: { lat: 59.65, lon: 17.92, place: 'Stockholm', country: 'SE' },
+  HEL: { lat: 60.32, lon: 24.96, place: 'Helsinki', country: 'FI' },
+  ZRH: { lat: 47.46, lon: 8.55, place: 'Zurich', country: 'CH' },
+  BRU: { lat: 50.90, lon: 4.48, place: 'Brussels', country: 'BE' },
+  VIE: { lat: 48.11, lon: 16.57, place: 'Vienna', country: 'AT' },
+  IST: { lat: 41.28, lon: 28.75, place: 'Istanbul', country: 'TR' },
+  // Americas
+  IAD: { lat: 38.94, lon: -77.46, place: 'Ashburn', country: 'US' },
+  EWR: { lat: 40.69, lon: -74.17, place: 'Newark', country: 'US' },
+  JFK: { lat: 40.64, lon: -73.78, place: 'New York', country: 'US' },
+  ORD: { lat: 41.98, lon: -87.90, place: 'Chicago', country: 'US' },
+  DFW: { lat: 32.90, lon: -97.04, place: 'Dallas', country: 'US' },
+  ATL: { lat: 33.64, lon: -84.43, place: 'Atlanta', country: 'US' },
+  MIA: { lat: 25.80, lon: -80.29, place: 'Miami', country: 'US' },
+  LAX: { lat: 33.94, lon: -118.41, place: 'Los Angeles', country: 'US' },
+  SJC: { lat: 37.36, lon: -121.93, place: 'San Jose', country: 'US' },
+  SFO: { lat: 37.62, lon: -122.38, place: 'San Francisco', country: 'US' },
+  SEA: { lat: 47.45, lon: -122.31, place: 'Seattle', country: 'US' },
+  DEN: { lat: 39.86, lon: -104.67, place: 'Denver', country: 'US' },
+  PHX: { lat: 33.43, lon: -112.01, place: 'Phoenix', country: 'US' },
+  BOS: { lat: 42.37, lon: -71.01, place: 'Boston', country: 'US' },
+  CMH: { lat: 40.00, lon: -82.89, place: 'Columbus', country: 'US' },
+  YYZ: { lat: 43.68, lon: -79.63, place: 'Toronto', country: 'CA' },
+  YUL: { lat: 45.47, lon: -73.74, place: 'Montreal', country: 'CA' },
+  GRU: { lat: -23.44, lon: -46.47, place: 'Sao Paulo', country: 'BR' },
+  // Middle East & Africa
+  DXB: { lat: 25.25, lon: 55.36, place: 'Dubai', country: 'AE' },
+  DOH: { lat: 25.27, lon: 51.61, place: 'Doha', country: 'QA' },
+  BAH: { lat: 26.27, lon: 50.63, place: 'Bahrain', country: 'BH' },
+  TLV: { lat: 32.01, lon: 34.89, place: 'Tel Aviv', country: 'IL' },
+  JNB: { lat: -26.14, lon: 28.25, place: 'Johannesburg', country: 'ZA' },
+  CPT: { lat: -33.97, lon: 18.60, place: 'Cape Town', country: 'ZA' },
+};
+
+// Normalized city coordinates for RFC 8805 geofeed city entries & datacenter hubs.
+const EXTRA_CITIES = {
+  memphis: { lat: 35.15, lon: -90.05, place: 'Memphis', country: 'US' },
+  hangzhou: { lat: 30.27, lon: 120.15, place: 'Hangzhou', country: 'CN' },
+  shanghai: { lat: 31.23, lon: 121.47, place: 'Shanghai', country: 'CN' },
+  beijing: { lat: 39.90, lon: 116.41, place: 'Beijing', country: 'CN' },
+  shenzhen: { lat: 22.54, lon: 114.06, place: 'Shenzhen', country: 'CN' },
+  falkenstein: { lat: 50.48, lon: 12.37, place: 'Falkenstein', country: 'DE' },
+  nuremberg: { lat: 49.45, lon: 11.08, place: 'Nuremberg', country: 'DE' },
+  rotterdam: { lat: 51.92, lon: 4.48, place: 'Rotterdam', country: 'NL' },
+  'frankfurt am main': { lat: 50.11, lon: 8.68, place: 'Frankfurt', country: 'DE' },
+  'sao paulo': { lat: -23.55, lon: -46.63, place: 'Sao Paulo', country: 'BR' },
+};
+
+const normCityKey = (s) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+
+export const CITY_COORDS = Object.freeze({
+  ...Object.fromEntries(Object.values(IATA_COORDS).map((v) => [normCityKey(v.place), v])),
+  ...EXTRA_CITIES,
+});
+
+/** Coordinates for an IATA PoP, city, cloud region, or country (highest precision first). */
+export function coordsFor({ iata, city, region, country } = {}) {
+  if (iata) {
+    const code = String(iata).trim().toUpperCase().slice(0, 3);
+    const hit = IATA_COORDS[code];
+    if (hit) return { ...hit, iata: code, source: 'iata-pop', precision: 'pop' };
+  }
+  if (city) {
+    const hit = CITY_COORDS[normCityKey(city)];
+    if (hit) return { ...hit, source: 'city', precision: 'city' };
+  }
   if (region) {
     const r = REGION_COORDS[String(region).toLowerCase()];
-    if (r) return { ...r, source: 'region' };
+    if (r) return { ...r, country: REGION_COUNTRY[String(region).toLowerCase()] ?? country ?? null, source: 'region', precision: 'region' };
   }
   if (country) {
-    const c = COUNTRY_COORDS[String(country).toUpperCase()];
-    if (c) return { ...c, source: 'country', place: country };
+    const cc = String(country).toUpperCase();
+    const c = COUNTRY_COORDS[cc];
+    if (c) return { ...c, country: cc, source: 'country', place: cc, precision: 'country' };
   }
   return null;
 }

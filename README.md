@@ -10,22 +10,24 @@ that re-derives the answer from live data does not.
 
 ```
 fleet-geo-mcp/
-  server.mjs              MCP stdio transport + 11 tools
+  server.mjs              MCP stdio transport + 12 tools
   src/tcpip.mjs           RFC 1792-modeled dual-stack TCP/UDP connection MIB & IPv4/IPv6 primitives
+  src/geofeed.mjs         RFC 8805 self-published IP geolocation feeds + RFC 9092/9632 RDAP discovery
   src/native.mjs          optional Rust N-API loader with automatic pure-JS fallback
   native/fleet-geo-native Encore-style Rust N-API core (kernel sockets/processes, LPM radix trie, SNI/DNS)
   scripts/build-native.mjs compiles the Rust N-API cdylib to native/*.node (zero JS runtime deps)
   src/observe.mjs         observe_endpoints: proxy, OS socket table (TCP+UDP), strace SNI/DNS
   src/doh.mjs             DNS over HTTPS (ISP-independent dual-stack A/AAAA/CNAME evidence)
-  src/sources.mjs         Cymru ASN (IPv4+IPv6), RDAP, AWS/GCP IPv4+IPv6 prefix tables, PeeringDB, crt.sh, globalping, headers
-  src/geo.mjs             CIDR math (IPv4+IPv6), distance, RTT floor, region anchors, hostname fingerprints
-  src/classify.mjs        evidence -> four planes -> confidence + contradictions
+  src/sources.mjs         Cymru ASN (IPv4+IPv6), RDAP, AWS/GCP IPv4+IPv6 prefix tables, PeeringDB, crt.sh, globalping, RFC 9293 edge timing/headers
+  src/geo.mjs             CIDR math (IPv4+IPv6), distance, RTT floor, region/IATA/city coordinates, hostname fingerprints
+  src/classify.mjs        evidence -> four planes -> confidence + two-layer mapPins + contradictions
   src/catalog.mjs         the only hand-maintained data, plus record_fact
   catalog.json            provider seeds, all marked hypothesis until cited
   fleet.json              the lane table (W1-W7, C, B, T) - adding a lane is a one-line edit
   config.json             entitled-host allowlist + limits
   test/selftest.mjs       offline strict + online tolerant checks (IPv4 + IPv6)
   test/tcpip.test.mjs     RFC 1792 dual-stack TCP/UDP MIB & address tests
+  test/geofeed.test.mjs   RFC 8805 geofeed, RFC 9293 edge timing, and two-layer mapPins tests
   test/observe.test.mjs   observe_endpoints checks, offline on every OS
   test/native.test.mjs    Rust N-API native core parity & kernel socket tests
   test/stdio-check.mjs    protocol surface, replayed from a recorded session
@@ -91,10 +93,11 @@ down the street as "the datacenter".
 | `locate_model` | one lane: model / lane name / base_url -> full location card |
 | `fleet_status` | every lane in one sweep -> table + roll-up |
 | `trace_endpoint` | one hostname -> CNAME hops, ASN, cloud region, RDAP |
-| `lookup_prefix` | one IPv4 or IPv6 address -> ASN, published cloud region, PeeringDB facilities |
-| `find_regional_endpoints` | crt.sh subdomains, regional ones surfaced |
+| `lookup_prefix` | one IPv4 or IPv6 address -> ASN, published cloud region, RFC 8805 geofeed, PeeringDB facilities |
+| `lookup_geofeed` | query an operator's self-published RFC 8805 IP geofeed (discovered via RDAP, authority-verified) |
+| `find_regional_endpoints` | crt.sh subdomains (RFC 6962), regional & direct/origin leads surfaced |
 | `probe_latency` | distributed probes + the RTT floor falsifier |
-| `inspect_edge` | headers from an **entitled** endpoint -> edge PoP only |
+| `inspect_edge` | headers + RFC 9293 TCP SYN->SYN-ACK RTT vs TTFB from an **entitled** endpoint -> `EDGE` PoP pin only |
 | `record_fact` | cite a provider page with a quote -> tier-A anchor |
 | `observe_endpoints` | run a lane's one-line probe and record the hosts and IPs it really connects to |
 | `inspect_connections` | passive RFC 1792 dual-stack TCP/UDP connection & listener MIB snapshot with IP geolocation |

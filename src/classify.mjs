@@ -51,10 +51,12 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
   const edge = {
     operator: fp?.operator ?? edgeFacts[0]?.asn?.org ?? null,
     pop: null,
+    city: null,
     ip: edgeFacts[0]?.ip ?? null,
     asn: edgeFacts[0]?.asn?.asn ?? null,
     note: 'TLS termination point, near the caller. Never an inference origin.',
   };
+  let edgePin = null;
   if (edgeFacts.length) {
     add(
       'B',
@@ -63,6 +65,27 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
         (edgeFacts[0].cloud ? `; published prefix ${edgeFacts[0].cloud.prefix} => ${edgeFacts[0].cloud.region}/${edgeFacts[0].cloud.service}` : ''),
       { plane: 'edge', operator: edgeFacts[0].asn?.org ?? null },
     );
+    const edgeGf = edgeFacts.find((f) => f.geofeed?.matched && !f.geofeed.noGeolocation)?.geofeed;
+    if (edgeGf) {
+      edge.city = edgeGf.city ?? null;
+      add(
+        'B',
+        `RFC 8805 geofeed (${edgeGf.feedUrl})`,
+        `edge IP falls in ${edgeGf.prefix} => ${[edgeGf.city, edgeGf.region, edgeGf.country].filter(Boolean).join(', ')} (edge plane only)`,
+        { plane: 'edge', country: edgeGf.country ?? null },
+      );
+      if (edgeGf.coords) {
+        edgePin = {
+          lat: edgeGf.coords.lat,
+          lon: edgeGf.coords.lon,
+          place: edgeGf.city ?? edgeGf.coords.place ?? edgeGf.country,
+          country: edgeGf.country ?? edgeGf.coords.country ?? null,
+          plane: 'EDGE',
+          precision: edgeGf.coords.precision ?? 'city',
+          source: `RFC 8805 geofeed (${edgeGf.feedUrl})`,
+        };
+      }
+    }
   }
 
   /* ---- origin plane --------------------------------------------------- */
@@ -70,6 +93,7 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
   const origin = {
     country: null,
     region: null,
+    city: null,
     facility: null,
     precision: 'unknown',
     cloud: null,
@@ -89,6 +113,22 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
         origin.country = cc;
         origin.cloud = f.cloud.cloud;
         origin.precision = 'region';
+      }
+    } else if (f.geofeed?.matched && !f.geofeed.noGeolocation) {
+      const gf = f.geofeed;
+      const tier = gf.authorityVerified ? 'A' : 'B';
+      const label = [gf.city, gf.region, gf.country].filter(Boolean).join(', ');
+      add(
+        tier,
+        `RFC 8805 geofeed (${gf.feedUrl})`,
+        `${f.ip} falls in ${gf.prefix}, self-published as ${label}${gf.authorityVerified ? ' (RDAP authority verified)' : ' (unverified authority)'}`,
+        { country: gf.country ?? null, region: gf.region ?? null, city: gf.city ?? null, plane: 'origin', anchor: 'rfc8805-geofeed' },
+      );
+      if (!origin.region && !origin.city) {
+        origin.country = gf.country ?? origin.country;
+        origin.region = gf.region ?? origin.region;
+        origin.city = gf.city ?? origin.city;
+        origin.precision = gf.city ? 'city' : gf.region ? 'region' : gf.country ? 'country' : origin.precision;
       }
     } else if (f.asn) {
       add('B', 'Team Cymru DNS', `${f.ip} is originated by ${f.asn.org ?? 'unknown'} (AS${f.asn.asn}), country ${f.asn.country ?? '?'}`, {
@@ -193,6 +233,24 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
 
   const nextProbes = suggestNext({ state, origin, edge: edgeFacts.length > 0, chain, control });
 
+  const originCoords =
+    state !== 'OPEN'
+      ? coordsFor({ city: origin.city, region: origin.region, country: origin.country })
+      : null;
+  const originPin = originCoords
+    ? {
+        lat: originCoords.lat,
+        lon: originCoords.lon,
+        place: origin.facility ?? origin.city ?? originCoords.place ?? origin.region ?? origin.country,
+        country: origin.country ?? originCoords.country ?? null,
+        region: origin.region ?? null,
+        plane: 'ORIGIN',
+        precision: origin.precision,
+        confidence: state,
+        source: anchors[0]?.source ?? votes[0]?.source ?? null,
+      }
+    : null;
+
   return {
     subject: { ...subject, publisher: control.publisher, servingEntity: control.servingEntity },
     planes: {
@@ -208,9 +266,15 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
     location: {
       country: origin.country ?? null,
       region: origin.region ?? null,
+      city: origin.city ?? null,
       facility: origin.facility ?? null,
       precision: origin.precision,
       cloud: origin.cloud ?? null,
+      coords: originCoords ? { lat: originCoords.lat, lon: originCoords.lon, place: originCoords.place ?? null } : null,
+    },
+    mapPins: {
+      edge: edgePin,
+      origin: originPin,
     },
     confidence: state,
     confidenceWhy: why.join('; '),
