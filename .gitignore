@@ -6,3 +6,6 @@ node_modules/
 catalog.json.tmp
 responses.jsonl
 *-responses.jsonl
+
+# observe_endpoints evidence (machine-specific; commit deliberately)
+observations/

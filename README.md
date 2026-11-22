@@ -10,7 +10,8 @@ that re-derives the answer from live data does not.
 
 ```
 fleet-geo-mcp/
-  server.mjs              MCP stdio transport + 9 tools
+  server.mjs              MCP stdio transport + 10 tools
+  src/observe.mjs         observe_endpoints: proxy, OS socket table, strace SNI/DNS (no decryption)
   src/doh.mjs             DNS over HTTPS (ISP-independent evidence)
   src/sources.mjs         Cymru ASN, RDAP, AWS/GCP prefix tables, PeeringDB, crt.sh, globalping, headers
   src/geo.mjs             CIDR math, distance, RTT floor, region anchors, hostname fingerprints
@@ -20,9 +21,30 @@ fleet-geo-mcp/
   fleet.json              the lane table (W1-W7, C, B, T) - adding a lane is a one-line edit
   config.json             entitled-host allowlist + limits
   test/selftest.mjs       41 checks (offline strict, online tolerant)
+  test/observe.test.mjs   11 observe_endpoints checks, offline on every OS
   test/stdio-check.mjs    protocol surface, replayed from a recorded session
   dsh-bundle/             the DSH wrapper, shipped with the server
 ```
+
+## Runs on every OS
+
+Windows, macOS and Linux, on Node.js 20 or newer, with zero dependencies. Every tool
+uses only Node built-ins and public HTTPS/DNS sources, so it behaves the same on all three.
+The only OS-specific part is `observe_endpoints`, which picks the native tool for each OS
+and never needs root or admin rights:
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| all lookup tools (`locate_model`, `fleet_status`, ...) | yes | yes | yes |
+| `observe_endpoints` proxy layer | yes | yes | yes |
+| `observe_endpoints` socket table | `netstat -ano` + PowerShell process tree | `lsof` + `ps` | `ss` + `ps` |
+| `observe_endpoints` SNI/DNS names | via the proxy | via the proxy | proxy + `strace` (if installed) |
+| CLI shims (`codex.cmd` etc.) | run through the shell | direct | direct |
+| process cleanup on timeout | `taskkill /T /F` | process group | process group |
+
+Per-OS differences in how a lane is launched live in `fleet.json` as
+`observe.argvByPlatform` (for example agy needs a pseudo-TTY via `script` on Linux and
+macOS). Shell examples below are PowerShell; the same commands work unchanged in bash or zsh.
 
 ## The one idea
 
@@ -50,7 +72,26 @@ down the street as "the datacenter".
 | `probe_latency` | distributed probes + the RTT floor falsifier |
 | `inspect_edge` | headers from an **entitled** endpoint -> edge PoP only |
 | `record_fact` | cite a provider page with a quote -> tier-A anchor |
+| `observe_endpoints` | run a lane's one-line probe and record the hosts and IPs it really connects to |
 | `explain_rules` | precedence, planes, confidence, falsifier |
+
+### observe_endpoints
+
+Config files say what a CLI *should* call; this records what it *does* call. Each lane in
+`fleet.json` carries an `observe.argv` (with optional `argvByPlatform` and a `git` fixture
+for jev). With `run:true` the tool runs that one prompt and watches it through three layers:
+
+| Layer | Linux | macOS | Windows | Sees |
+|---|---|---|---|---|
+| logging CONNECT proxy (`HTTPS_PROXY`) | yes | yes | yes | hostname, port, bytes per tunnel |
+| OS socket table for the process tree | `ss` | `lsof` | `netstat -ano` | every remote IP, proxy or not |
+| `strace -yy`, when installed | yes | - | - | TLS SNI hostname, DNS questions, every connect |
+
+Nothing is decrypted: the hostname comes from the CONNECT line, the cleartext SNI or the
+DNS question. Every destination IP then gets `lookup_prefix`-style facts and an `EDGE` /
+`ENDPOINT` label. The result is CONTROL-plane evidence, saved under `observations/`.
+It ends at the TLS edge and never proves the origin. Without `run:true` it only prints
+the commands, because each lane costs one model call.
 
 ## The answer shape
 
@@ -132,13 +173,20 @@ the model, and what their documentation claims.
 3. Passthrough aggregators (OpenRouter, Together, Fireworks) return a `provider` field per
    response. That is authoritative for the *serving entity*; the tool names it as the next
    probe instead of inventing it.
-4. IPv6 addresses skip the ASN lookup in v1 (IPv4 only).
+4. IPv6 addresses skip the ASN lookup in v1 (IPv4 only); `observe_endpoints` labels them
+   `UNKNOWN` rather than presuming they are unicast endpoints.
+5. `observe_endpoints` sees where a CLI connects, which ends at the TLS edge. A CLI that
+   hands traffic to a local gateway outside its process tree is reported as `LOCAL_GATEWAY`
+   with the loopback ports, not as a location.
 
 ## Develop
 
 ```powershell
 cd C:\DEV\fleet-geo-mcp
 node server.mjs --selftest        # 41 checks; offline strict, network tolerant
+node test/observe.test.mjs        # 11 observe_endpoints checks (or: npm test for both)
+node server.mjs --tool observe_endpoints --args '{"lane":"all"}'            # plan only
+node server.mjs --tool observe_endpoints --args '{"lane":"W7","run":true}'  # one model call
 node server.mjs --list-tools
 node server.mjs --tool fleet_status --args '{"limit":3}'
 node server.mjs --tool locate_model --args '{"lane":"W7"}'

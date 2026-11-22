@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.mjs",
     "stdio": "node server.mjs",
-    "test": "node server.mjs --selftest",
+    "test": "node server.mjs --selftest && node test/observe.test.mjs",
+    "test:observe": "node test/observe.test.mjs",
     "selftest": "node server.mjs --selftest",
     "tools": "node server.mjs --list-tools"
   },

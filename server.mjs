@@ -13,6 +13,8 @@ import { asnForIp, certSubdomains, cloudRangeFor, loadCloudRanges, peeringdbFor,
 import { analyzeLatency, assemble } from './src/classify.mjs';
 import { isEntitled, loadCatalog, loadConfig, matchProvider, recordFact, staleness } from './src/catalog.mjs';
 import { EDGE_ASNS } from './src/geo.mjs';
+import { laneCommand, observeLane } from './src/observe.mjs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = { name: 'fleet-geo', version: '1.1.0' };
@@ -218,6 +220,23 @@ const TOOLS = [
     },
   },
   {
+    name: 'observe_endpoints',
+    title: 'Observe which hosts a lane really calls',
+    description:
+      'Run a lane\'s one-line probe prompt (fleet.json observe.argv) and record every outbound connection: a logging CONNECT proxy (every OS), the OS socket table for the process tree (ss / lsof / netstat), and on Linux strace for TLS SNI and DNS names. Nothing is decrypted. Settles the CONTROL plane only - observed hosts end at the TLS edge, never the inference origin. Spends one model call per lane, so it only runs with run:true; without it, it returns the commands it would run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lane: { type: 'string', description: 'Lane id from fleet.json (e.g. "W7"), or "all".' },
+        run: { type: 'boolean', description: 'true to execute (spends one model call per lane). Default false: plan only.' },
+        timeout_s: { type: 'integer', minimum: 10, maximum: 600, description: 'Per-lane timeout (default 120).' },
+        locate: { type: 'boolean', description: 'Also run locate_model on each observed host (default true).' },
+      },
+      required: ['lane'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'explain_rules',
     title: 'Explain the rules',
     description: 'Return the source precedence, plane definitions, confidence states and the RTT falsifier used by every other tool.',
@@ -400,6 +419,64 @@ async function toolInspectEdge(args) {
   return { ...r, entitlement: gate.reason };
 }
 
+async function toolObserveEndpoints(args) {
+  const all = loadFleet().lanes;
+  const wanted = String(args.lane ?? '').toLowerCase();
+  const lanes = wanted === 'all' ? all : all.filter((l) => l.lane.toLowerCase() === wanted);
+  if (!lanes.length) return { error: 'UNKNOWN_LANE', detail: `no lane "${args.lane}" in fleet.json`, lanes: all.map((l) => l.lane) };
+  if (args.run !== true) {
+    return {
+      plan: lanes.map((l) => ({ lane: l.lane, cli: l.cli, command: laneCommand(l)?.argv.join(' ') ?? null, fixture: l.observe?.fixture ?? null })),
+      note: 'Plan only. Pass run:true to execute; each lane spends one model call.',
+    };
+  }
+  const results = [];
+  const dir = path.join(ROOT, 'observations');
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${wanted}.json`);
+  const save = () => writeFileSync(file, `${JSON.stringify({ observedAt: new Date().toISOString(), platform: process.platform, results }, null, 2)}\n`);
+  for (const lane of lanes) {
+    process.stderr.write(`observe ${lane.lane} (${lane.cli}) ...\n`);
+    const r = await observeLane(lane, { timeoutMs: (args.timeout_s ?? 120) * 1000 });
+    process.stderr.write(`observe ${lane.lane} done: ${r.verdict ?? r.error} exit=${r.exitCode} timedOut=${r.timedOut}\n`);
+    // Every destination IP from the packet headers gets its own location lookup: the
+    // cloud's published prefix region outranks registration data, and an anycast/CDN
+    // address is labelled EDGE so it is never read as the inference origin.
+    const ipCard = async (ip) => {
+      const f = await factsForIp(ip).catch(() => null);
+      if (!f) return { ip, error: 'lookup-failed' };
+      // No ASN data (IPv6 in v1, or a failed lookup): never presume unicast.
+      if (!f.asn && !f.cloud) {
+        return { ip, asn: null, org: null, registeredCountry: null, cloudRegion: null, plane: 'UNKNOWN',
+          meaning: ip.includes(':') ? 'IPv6: ASN lookup not supported yet; edge or endpoint undetermined.' : 'No ASN or cloud-prefix data; edge or endpoint undetermined.' };
+      }
+      return {
+        ip,
+        asn: f.asn?.asn ?? null,
+        org: f.asn?.org ?? null,
+        registeredCountry: f.asn?.country ?? null,
+        cloudRegion: f.cloud ? `${f.cloud.cloud}/${f.cloud.region}` : null,
+        plane: f.edge ? 'EDGE' : 'ENDPOINT',
+        meaning: f.edge
+          ? 'CDN/anycast address: the TLS edge nearest this machine, not where inference runs.'
+          : f.cloud ? 'Unicast cloud address in a published region: the endpoint this CLI reached is in that region.'
+          : 'Unicast address with registration data only: country of registration, not a measured location.',
+      };
+    };
+    if (args.locate !== false) {
+      for (const h of r.hosts ?? []) {
+        h.ipLocations = await Promise.all(h.ips.slice(0, 4).map(ipCard));
+        const card = await locateCore({ baseUrl: `https://${h.host}`, deep: false }).catch((e) => ({ error: e.message }));
+        h.locate = { confidence: card.confidence ?? null, edge: card.edge?.operator ?? null, origin: card.origin ?? null, error: card.error ?? null };
+      }
+      for (const u of r.unnamedConnections ?? []) Object.assign(u, await ipCard(u.ip));
+    }
+    results.push(r);
+    save();
+  }
+  return { results, savedTo: file };
+}
+
 async function toolRecordFact(args) {
   return recordFact(args);
 }
@@ -431,6 +508,7 @@ const HANDLERS = {
   find_regional_endpoints: toolFindRegionalEndpoints,
   probe_latency: toolProbeLatency,
   inspect_edge: toolInspectEdge,
+  observe_endpoints: toolObserveEndpoints,
   record_fact: toolRecordFact,
   explain_rules: toolExplainRules,
 };
