@@ -9,3 +9,7 @@ responses.jsonl
 
 # observe_endpoints evidence (machine-specific; commit deliberately)
 observations/
+
+# optional Rust N-API native core build outputs
+native/fleet-geo-native/target/
+native/*.node

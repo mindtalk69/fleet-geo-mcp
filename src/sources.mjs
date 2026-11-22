@@ -4,6 +4,7 @@
 // explicitly declares an entitled host.
 import { resolveHost, txt } from './doh.mjs';
 import { parseAddress, parseCidr, parseCidr6 } from './geo.mjs';
+import { getNative } from './native.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -139,7 +140,23 @@ async function loadCloudRanges() {
     notes.push('gstatic cloud.json');
   } else notes.push(`GCP ranges unavailable: ${gcp.reason?.message}`);
 
-  cloudCache = { entries: entriesV4, entriesV4, entriesV6, notes, loadedAt: new Date().toISOString() };
+  let nativeTrie = null;
+  const native = getNative();
+  if (native?.PrefixTable) {
+    try {
+      const trie = new native.PrefixTable();
+      const batch = [
+        ...entriesV4.map((e) => ({ cidr: e.cidr, cloud: e.cloud, region: e.region, service: e.service, source: e.source })),
+        ...entriesV6.map((e) => ({ cidr: e.cidr, cloud: e.cloud, region: e.region, service: e.service, source: e.source })),
+      ];
+      trie.insertBatch(batch);
+      nativeTrie = trie;
+    } catch {
+      nativeTrie = null;
+    }
+  }
+
+  cloudCache = { entries: entriesV4, entriesV4, entriesV6, nativeTrie, notes, loadedAt: new Date().toISOString() };
   cloudLoadedAt = Date.now();
   return cloudCache;
 }
@@ -148,7 +165,11 @@ async function loadCloudRanges() {
 export async function cloudRangeFor(ip) {
   const addr = parseAddress(ip);
   if (!addr || addr.isUnspecified || addr.isLoopback) return null;
-  const { entriesV4, entriesV6 } = await loadCloudRanges();
+  const { entriesV4, entriesV6, nativeTrie } = await loadCloudRanges();
+
+  if (nativeTrie) {
+    return nativeTrie.lookup(addr.normalized) ?? null;
+  }
 
   let best = null;
   if (addr.family === 'ipv4') {

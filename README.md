@@ -12,6 +12,9 @@ that re-derives the answer from live data does not.
 fleet-geo-mcp/
   server.mjs              MCP stdio transport + 11 tools
   src/tcpip.mjs           RFC 1792-modeled dual-stack TCP/UDP connection MIB & IPv4/IPv6 primitives
+  src/native.mjs          optional Rust N-API loader with automatic pure-JS fallback
+  native/fleet-geo-native Encore-style Rust N-API core (kernel sockets/processes, LPM radix trie, SNI/DNS)
+  scripts/build-native.mjs compiles the Rust N-API cdylib to native/*.node (zero JS runtime deps)
   src/observe.mjs         observe_endpoints: proxy, OS socket table (TCP+UDP), strace SNI/DNS
   src/doh.mjs             DNS over HTTPS (ISP-independent dual-stack A/AAAA/CNAME evidence)
   src/sources.mjs         Cymru ASN (IPv4+IPv6), RDAP, AWS/GCP IPv4+IPv6 prefix tables, PeeringDB, crt.sh, globalping, headers
@@ -24,14 +27,32 @@ fleet-geo-mcp/
   test/selftest.mjs       offline strict + online tolerant checks (IPv4 + IPv6)
   test/tcpip.test.mjs     RFC 1792 dual-stack TCP/UDP MIB & address tests
   test/observe.test.mjs   observe_endpoints checks, offline on every OS
+  test/native.test.mjs    Rust N-API native core parity & kernel socket tests
   test/stdio-check.mjs    protocol surface, replayed from a recorded session
   dsh-bundle/             the DSH wrapper, shipped with the server
 ```
 
-## Runs on every OS
+## Runs on every OS (optional Rust N-API native core)
 
-Windows, macOS and Linux, on Node.js 20 or newer, with zero dependencies. Every tool
-uses only Node built-ins and public HTTPS/DNS sources, so it behaves the same on all three.
+Windows, macOS and Linux, on Node.js 20 or newer, with **zero npm dependencies**. Every tool
+uses only Node built-ins and public HTTPS/DNS sources, so it works out of the box with pure JS.
+
+For low-level kernel speed without subprocesses (an Encore-style Node + Rust N-API hybrid),
+build the optional Rust native core:
+
+```bash
+npm run build:native   # produces native/fleet-geo-native.<platform>-<arch>.node
+```
+
+When present, `src/native.mjs` loads the compiled `.node` addon directly inside Node.js (still
+zero `node_modules`) and transparently accelerates:
+
+- **Kernel RFC 1792 socket & process snapshots (zero subprocesses)**: Linux `/proc/net/*` + `/proc/<pid>`, Windows `GetExtendedTcpTable` / `GetExtendedUdpTable` + `CreateToolhelp32Snapshot`, macOS `libproc`.
+- **Dual-stack IPv4 + IPv6 LPM radix trie**: sub-microsecond longest-prefix match for AWS/GCP prefix tables.
+- **Zero-copy protocol parsers**: bounds-checked Rust TLS `ClientHello` SNI, DNS question, and address normalizers.
+
+Set `FLEET_GEO_NATIVE=0` to force the pure-JS fallback at any time. `explain_rules` and
+`inspect_connections` report the active engine (`rust-napi` vs `js-fallback`).
 The only OS-specific part is `observe_endpoints`, which picks the native tool for each OS
 and never needs root or admin rights:
 

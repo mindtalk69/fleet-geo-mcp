@@ -26,6 +26,7 @@ import {
   parseNetstat,
   parseSs,
 } from './tcpip.mjs';
+import { getNative } from './native.mjs';
 
 export { ConnectionMib, parseLsof, parseNetstat, parseSs };
 
@@ -33,6 +34,10 @@ export { ConnectionMib, parseLsof, parseNetstat, parseSs };
 
 /** Hostname from a TLS ClientHello record, or null. Cleartext by design of TLS 1.2/1.3. */
 export function parseClientHelloSni(buf) {
+  const native = getNative();
+  if (native?.parseClientHelloSni && Buffer.isBuffer(buf)) {
+    return native.parseClientHelloSni(buf) ?? null;
+  }
   try {
     if (buf.length < 43 || buf[0] !== 0x16 || buf[5] !== 0x01) return null;
     let p = 9 + 2 + 32; // record hdr(5) + hs hdr(4) + version(2) + random(32)
@@ -60,6 +65,10 @@ export function parseClientHelloSni(buf) {
 
 /** Question name of a DNS query (UDP payload), or null. */
 export function parseDnsQuestion(buf) {
+  const native = getNative();
+  if (native?.parseDnsQuestion && Buffer.isBuffer(buf)) {
+    return native.parseDnsQuestion(buf) ?? null;
+  }
   try {
     if (buf.length < 17) return null;
     const flags = buf.readUInt16BE(2);
@@ -207,8 +216,14 @@ const run = (cmd, args, timeout = 5000) =>
 
 /**
  * Snapshot dual-stack TCP (all RFC 1792 states) and UDP sockets/listeners on any OS.
+ * Uses the in-process Rust N-API kernel reader when built (zero subprocesses); falls
+ * back transparently to `ss` / `lsof` / `netstat`.
  */
 export async function socketSnapshot(platform = process.platform) {
+  const native = getNative();
+  if (native?.snapshotSockets && platform === process.platform) {
+    return native.snapshotSockets();
+  }
   if (platform === 'linux') return parseSs(await run('ss', ['-tnupHa']));
   if (platform === 'darwin') return parseLsof(await run('lsof', ['-nP', '-iTCP', '-iUDP', '-F', 'pcfnPT']));
   if (platform === 'win32') return parseNetstat(await run('netstat', ['-ano']));
@@ -216,6 +231,10 @@ export async function socketSnapshot(platform = process.platform) {
 }
 
 export async function processTable(platform = process.platform) {
+  const native = getNative();
+  if (native?.snapshotProcesses && platform === process.platform) {
+    return native.snapshotProcesses();
+  }
   if (platform === 'win32') {
     return parseProcessTable(await run('powershell', ['-NoProfile', '-Command',
       'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Csv -NoTypeInformation']));

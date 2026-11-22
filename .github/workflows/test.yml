@@ -20,4 +20,15 @@ jobs:
       - run: node --version
       # Offline checks are strict and gate the build; live-source checks are
       # tolerant, so a flaky upstream warns instead of failing CI.
-      - run: npm test
+      - name: Test pure-JS fallback
+        env:
+          FLEET_GEO_NATIVE: '0'
+        run: npm test
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build Rust N-API native core
+        run: npm run build:native
+      - name: Test with Rust N-API native core
+        env:
+          REQUIRE_NATIVE: '1'
+        run: npm test

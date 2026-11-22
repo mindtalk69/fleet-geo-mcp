@@ -8,13 +8,16 @@
   "scripts": {
     "start": "node server.mjs",
     "stdio": "node server.mjs",
-    "test": "node server.mjs --selftest && node test/tcpip.test.mjs && node test/observe.test.mjs",
+    "build:native": "node scripts/build-native.mjs",
+    "build:native:debug": "node scripts/build-native.mjs --debug",
+    "test": "node server.mjs --selftest && node test/tcpip.test.mjs && node test/observe.test.mjs && node test/native.test.mjs",
     "test:tcpip": "node test/tcpip.test.mjs",
     "test:observe": "node test/observe.test.mjs",
+    "test:native": "node test/native.test.mjs",
     "selftest": "node server.mjs --selftest",
     "tools": "node server.mjs --list-tools"
   },
-  "files": ["server.mjs", "src", "test", "catalog.json", "config.json", "fleet.json", "README.md", "INSTALL.md"],
+  "files": ["server.mjs", "src", "native", "scripts", "test", "catalog.json", "config.json", "fleet.json", "README.md", "INSTALL.md"],
   "keywords": ["mcp", "model-context-protocol", "geolocation", "data-residency", "osint", "llm-ops", "ai-governance"],
   "engines": { "node": ">=20" },
   "license": "MIT",

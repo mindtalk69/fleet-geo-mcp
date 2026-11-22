@@ -14,6 +14,7 @@ import { analyzeLatency, assemble } from './src/classify.mjs';
 import { isEntitled, loadCatalog, loadConfig, matchProvider, recordFact, staleness } from './src/catalog.mjs';
 import { EDGE_ASNS, parseAddress } from './src/geo.mjs';
 import { ConnectionMib } from './src/tcpip.mjs';
+import { nativeStatus } from './src/native.mjs';
 import { descendants, laneCommand, observeLane, processTable, socketSnapshot } from './src/observe.mjs';
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 
@@ -594,6 +595,7 @@ async function toolInspectConnections(args) {
   const out = {
     observedAt: new Date().toISOString(),
     platform,
+    runtime: nativeStatus(),
     rfc: snap.rfc,
     plane: 'CONTROL',
     summary: snap.summary,
@@ -619,6 +621,7 @@ async function toolExplainRules() {
   const config = loadConfig();
   return {
     rules: RULES,
+    runtime: nativeStatus(),
     catalog: { version: catalog.version, lastReviewed: catalog.lastReviewed, staleAfterDays: catalog.staleAfterDays, providers: catalog.providers.length },
     entitlement: { entitledHosts: config.entitledHosts, allowAnyHost: config.allowAnyHost },
     sources: [
