@@ -174,12 +174,14 @@ const TOOLS = [
     name: 'find_regional_endpoints',
     title: 'Find regional endpoints',
     description:
-      'Search certificate transparency logs for subdomains of a domain and surface ones that look regional (-eu, -jp, -sg, -cn ...). Providers often run regional endpoints that no documentation mentions.',
+      'Search certificate transparency logs (RFC 6962) for subdomains of a domain and surface ones that look regional (-eu, -jp, -sg, -cn, origin-, direct- ...). Pass resolve:true to passively resolve top leads via DoH + AWS/GCP prefix tables + RFC 8805 geofeeds to spot non-CDN regional endpoints.',
     inputSchema: {
       type: 'object',
       properties: {
         domain: { type: 'string', description: 'Apex domain, e.g. "openai.com".' },
         limit: { type: 'integer', minimum: 10, maximum: 500, description: 'Max names to return (default 200).' },
+        resolve: { type: 'boolean', description: 'Passively resolve top regional/direct leads via DoH and cloud/geofeed tables (default false).' },
+        max_resolve: { type: 'integer', minimum: 1, maximum: 12, description: 'Max leads to resolve when resolve:true (default 6).' },
       },
       required: ['domain'],
       additionalProperties: false,
@@ -289,6 +291,21 @@ const TOOLS = [
         feed_url: { type: 'string', description: 'Optional explicit HTTPS RFC 8805 CSV URL (if omitted, discovered from RDAP).' },
       },
       required: ['ip'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fleet_map',
+    title: 'Build two-layer fleet map feed (EDGE + ORIGIN)',
+    description:
+      'Produce one map-ready JSON feed for visualizers such as agent2mind: combines latest saved observations (CONTROL), entitled inspect_edge PoP headers + RFC 9293 timing (EDGE layer pins with exact IATA lat/lon), and locate_model anchors (ORIGIN layer pins, strictly null when OPEN). Never merges EDGE and ORIGIN.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lanes: { type: 'array', items: { type: 'string' }, description: 'Optional filter: lane ids (e.g. ["W1","W7","C"]). Defaults to all lanes in fleet.json.' },
+        probe_edge: { type: 'boolean', description: 'Probe entitled endpoints via inspect_edge for live EDGE PoP pins + SYN->SYN-ACK RTT vs TTFB (default true).' },
+        use_observations: { type: 'boolean', description: 'Use latest saved observations/ per lane for real CLI hosts (default true).' },
+      },
       additionalProperties: false,
     },
   },
@@ -443,11 +460,42 @@ async function toolLookupPrefix(args) {
 
 async function toolFindRegionalEndpoints(args) {
   const r = await certSubdomains(args.domain, { limit: args.limit ?? 200 });
-  return {
+  const out = {
     domain: args.domain,
     ...r,
-    interpretation: 'Regional-looking subdomains are leads, not anchors. Confirm each by resolving it and matching the published cloud region.',
+    interpretation: 'Regional-looking subdomains are leads, not anchors. Confirm each by resolving it and matching the published cloud region or RFC 8805 geofeed.',
   };
+  if (args.resolve === true && r.regionHints.length) {
+    const maxResolve = Math.min(Math.max(args.max_resolve ?? 6, 1), 12);
+    const resolvedLeads = [];
+    for (const sub of r.regionHints.slice(0, maxResolve)) {
+      try {
+        const { chain, ipFacts } = await gatherChain(sub, { maxIps: 2 });
+        const nonEdge = ipFacts.filter((f) => !f.edge);
+        const cloudRegions = [...new Set(nonEdge.map((f) => (f.cloud ? `${f.cloud.cloud}/${f.cloud.region}` : null)).filter(Boolean))];
+        const geofeeds = nonEdge.filter((f) => f.geofeed?.matched && !f.geofeed.noGeolocation).map((f) => ({
+          ip: f.ip, country: f.geofeed.country, region: f.geofeed.region, city: f.geofeed.city, authorityVerified: f.geofeed.authorityVerified,
+        }));
+        const firstRegion = nonEdge.find((f) => f.cloud?.region && !/^global$/i.test(f.cloud.region))?.cloud?.region;
+        const firstGf = nonEdge.find((f) => f.geofeed?.matched && !f.geofeed.noGeolocation)?.geofeed;
+        const pinCoords = firstRegion ? coordsFor({ region: firstRegion }) : firstGf?.coords ?? null;
+        resolvedLeads.push({
+          host: sub,
+          finalHost: chain.finalHost,
+          ips: ipFacts.map((f) => ({ ip: f.ip, family: f.family, edge: f.edge, asn: f.asn?.asn ?? null, org: f.asn?.org ?? null })),
+          edgeOnly: ipFacts.length > 0 && nonEdge.length === 0,
+          cloudRegions,
+          geofeeds,
+          leadPin: pinCoords ? { lat: pinCoords.lat, lon: pinCoords.lon, place: pinCoords.place ?? firstRegion ?? firstGf?.city ?? null, plane: 'ORIGIN_LEAD', precision: pinCoords.precision ?? 'region' } : null,
+        });
+      } catch (e) {
+        resolvedLeads.push({ host: sub, error: e?.message ?? String(e) });
+      }
+    }
+    out.resolvedLeads = resolvedLeads;
+    out.note = 'Resolved sibling subdomains are passive leads only: they show where a provider operates regional endpoints, without proving api.<domain> routes there.';
+  }
+  return out;
 }
 
 async function toolProbeLatency(args) {
@@ -726,6 +774,164 @@ async function toolLookupGeofeed(args) {
   };
 }
 
+/** Load the newest saved observation per lane from observations/. */
+function loadLatestObservations(dir) {
+  const latest = new Map();
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => f.endsWith('.json')).sort(); } catch { /* none */ }
+  for (const f of files) {
+    let data;
+    try { data = JSON.parse(readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+    for (const r of data.results ?? []) {
+      if (!r?.lane || r.error) continue;
+      const prev = latest.get(r.lane);
+      if (!prev || String(prev.startedAt) <= String(r.startedAt)) latest.set(r.lane, r);
+    }
+  }
+  return latest;
+}
+
+async function toolFleetMap(args) {
+  const fleet = loadFleet();
+  const catalog = loadCatalog();
+  const only = args.lanes?.length ? new Set(args.lanes.map((s) => String(s).toLowerCase())) : null;
+  const lanes = fleet.lanes.filter((l) => !only || only.has(l.lane.toLowerCase()) || only.has(l.cli.toLowerCase()));
+  const latestObs = args.use_observations !== false ? loadLatestObservations(path.join(ROOT, 'observations')) : new Map();
+
+  const edgeLayer = [];
+  const originLayer = [];
+  const unresolvedLayer = [];
+  const laneCards = [];
+  const edgeCache = new Map();
+
+  const probeIfEntitled = async (host) => {
+    if (!host || args.probe_edge === false) return null;
+    if (edgeCache.has(host)) return edgeCache.get(host);
+    const gate = isEntitled(host);
+    if (!gate.allowed) {
+      const val = { entitled: false, reason: gate.reason };
+      edgeCache.set(host, val);
+      return val;
+    }
+    const val = await probeEdgeHeaders(`https://${host}`).then((r) => ({ entitled: true, ...r })).catch((e) => ({ entitled: true, error: e.message }));
+    edgeCache.set(host, val);
+    return val;
+  };
+
+  for (const l of lanes) {
+    const obs = latestObs.get(l.lane) ?? null;
+    const provider = matchProvider(catalog, { model: l.model, lane: l.cli });
+    const observedHost = obs?.hosts?.[0]?.host ?? null;
+    const catalogHost = provider?.apiHosts?.[0] ?? null;
+    const primaryHost = observedHost ?? catalogHost ?? null;
+
+    const card = primaryHost
+      ? await locateCore({ lane: l.lane, model: l.model, baseUrl: `https://${primaryHost}`, deep: false }).catch((e) => ({ error: e.message }))
+      : { error: 'NO_ENDPOINT', confidence: 'OPEN' };
+
+    // Probe the observed host if entitled; otherwise check the provider's entitled API host (labeled clearly).
+    let edgeProbe = await probeIfEntitled(primaryHost);
+    let edgeProbeHost = primaryHost;
+    if ((!edgeProbe || !edgeProbe.entitled) && catalogHost && catalogHost !== primaryHost) {
+      const catProbe = await probeIfEntitled(catalogHost);
+      if (catProbe?.entitled) {
+        edgeProbe = catProbe;
+        edgeProbeHost = catalogHost;
+      }
+    }
+
+    const edgePin = edgeProbe?.edgePin
+      ? {
+          lane: l.lane,
+          cli: l.cli,
+          model: l.model,
+          host: edgeProbeHost,
+          vendor: edgeProbe.edge?.vendor ?? null,
+          iata: edgeProbe.edgePin.iata,
+          place: edgeProbe.edgePin.place,
+          country: edgeProbe.edgePin.country,
+          lat: edgeProbe.edgePin.lat,
+          lon: edgeProbe.edgePin.lon,
+          edgeTcpRttMs: edgeProbe.timing?.edgeTcpRttMs ?? null,
+          httpRttMs: edgeProbe.timing?.httpRttMs ?? null,
+          backendDeltaMs: edgeProbe.timing?.backendDeltaMs ?? null,
+          plane: 'EDGE',
+          precision: edgeProbe.edgePin.precision,
+          source: edgeProbe.edgePin.source,
+        }
+      : card.mapPins?.edge
+        ? { lane: l.lane, cli: l.cli, model: l.model, host: primaryHost, ...card.mapPins.edge }
+        : null;
+
+    const originPin = card.mapPins?.origin
+      ? {
+          lane: l.lane,
+          cli: l.cli,
+          model: l.model,
+          publisher: card.subject?.publisher ?? provider?.publisher ?? null,
+          host: primaryHost,
+          ...card.mapPins.origin,
+        }
+      : null;
+
+    if (edgePin) edgeLayer.push(edgePin);
+    if (originPin) {
+      originLayer.push(originPin);
+    } else {
+      unresolvedLayer.push({
+        lane: l.lane,
+        cli: l.cli,
+        model: l.model,
+        publisher: card.subject?.publisher ?? provider?.publisher ?? null,
+        observedHost,
+        catalogHost,
+        edgeOperator: card.planes?.edge?.operator ?? edgeProbe?.edge?.vendor ?? null,
+        confidence: card.confidence ?? 'OPEN',
+        backendDeltaMs: edgeProbe?.timing?.backendDeltaMs ?? null,
+        impliedBackendMaxDistanceKm: edgeProbe?.timing?.impliedBackendMaxDistanceKm ?? null,
+        nextProbe: card.nextProbes?.[0] ?? 'Record a cited provider residency fact with record_fact or resolve the serving entity.',
+      });
+    }
+
+    laneCards.push({
+      lane: l.lane,
+      cli: l.cli,
+      model: l.model,
+      publisher: card.subject?.publisher ?? provider?.publisher ?? null,
+      control: {
+        observedHost,
+        catalogHost,
+        verdict: obs?.verdict ?? null,
+        observedAt: obs?.startedAt ?? null,
+      },
+      confidence: card.confidence ?? 'OPEN',
+      precision: card.location?.precision ?? 'unknown',
+      edgePin,
+      originPin,
+      timing: edgeProbe?.timing ?? null,
+      originHints: edgeProbe?.originHints ?? null,
+    });
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    runtime: nativeStatus(),
+    layers: {
+      edge: edgeLayer,
+      origin: originLayer,
+      unresolved: unresolvedLayer,
+    },
+    lanes: laneCards,
+    summary: {
+      totalLanes: laneCards.length,
+      edgePins: edgeLayer.length,
+      originPins: originLayer.length,
+      unresolvedOrigin: unresolvedLayer.length,
+    },
+    note: 'Two strictly separated map layers: EDGE pins show measured TLS termination PoPs near this host; ORIGIN pins show anchored/corroborated inference residency only (never guessed for OPEN lanes).',
+  };
+}
+
 async function toolRecordFact(args) {
   return recordFact(args);
 }
@@ -755,6 +961,7 @@ async function toolExplainRules() {
 const HANDLERS = {
   locate_model: toolLocateModel,
   fleet_status: toolFleetStatus,
+  fleet_map: toolFleetMap,
   trace_endpoint: toolTraceEndpoint,
   lookup_prefix: toolLookupPrefix,
   lookup_geofeed: toolLookupGeofeed,

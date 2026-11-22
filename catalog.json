@@ -7,39 +7,102 @@
       "key": "openai",
       "publisher": "OpenAI",
       "legalEntity": "OpenAI (US entity) - confirm current contracting entity in your agreement",
-      "match": ["^gpt-", "^o[1-9](-|$)", "^chatgpt", "^codex", "^text-"],
-      "apiHosts": ["api.openai.com"],
-      "laneClis": ["codex"],
+      "match": [
+        "^gpt-",
+        "^o[1-9](-|$)",
+        "^chatgpt",
+        "^codex",
+        "^text-"
+      ],
+      "apiHosts": [
+        "api.openai.com"
+      ],
+      "laneClis": [
+        "codex"
+      ],
       "residency": [
-        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "OpenAI offers EU data residency on some products; defaults are US." }
+        {
+          "region": "US",
+          "country": "US",
+          "default": false,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "OpenAI offers EU data residency on some products; defaults are US."
+        },
+        {
+          "region": null,
+          "country": "US",
+          "precision": "country",
+          "default": true,
+          "source": "https://openai.com/policies/privacy-policy/",
+          "quote": "OpenAI processes your Personal Data for the purposes described in this policy on servers located in various jurisdictions, including processing and storing your Personal Data in our facilities and servers in the United States, or in countries or territories where our affiliates and partners or our vendors and service providers are located.",
+          "verifiedAt": "2026-11-22",
+          "note": null
+        }
       ],
       "facilityAnchors": [],
-      "status": "hypothesis",
+      "status": "verified",
       "notes": "API is fronted by an edge network, so DNS alone will show a PoP. Region must come from documentation or from the customer's Azure deployment."
     },
     {
       "key": "anthropic",
       "publisher": "Anthropic",
       "legalEntity": "Anthropic PBC (US)",
-      "match": ["^claude"],
-      "apiHosts": ["api.anthropic.com"],
+      "match": [
+        "^claude"
+      ],
+      "apiHosts": [
+        "api.anthropic.com"
+      ],
       "laneClis": [],
       "residency": [
-        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Anthropic serves from cloud partner regions; check the current regions page." }
+        {
+          "region": "US",
+          "country": "US",
+          "default": false,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "Anthropic serves from cloud partner regions; check the current regions page."
+        },
+        {
+          "region": null,
+          "country": "US",
+          "precision": "country",
+          "default": true,
+          "source": "https://www.anthropic.com/legal/privacy",
+          "quote": "Anthropic is a global company, and when you access our Services, your personal data is transferred to our servers in the US, or to other countries outside the European Economic Area (“EEA”) and the UK for the purposes outlined in Section 2 of this Privacy Policy, for example to provide you with the Service, or to train our models, or to conduct research.",
+          "verifiedAt": "2026-11-22",
+          "note": null
+        }
       ],
       "facilityAnchors": [],
-      "status": "hypothesis",
+      "status": "verified",
       "notes": "Runs on cloud partners (historically AWS), so the cloud region is the anchor - check whether the fleet calls the API directly or through Bedrock/Vertex."
     },
     {
       "key": "google",
       "publisher": "Google",
       "legalEntity": "Google LLC / Google Ireland Ltd depending on contract",
-      "match": ["^gemini", "^gemma", "^palm"],
-      "apiHosts": ["generativelanguage.googleapis.com"],
-      "laneClis": ["antigravity"],
+      "match": [
+        "^gemini",
+        "^gemma",
+        "^palm"
+      ],
+      "apiHosts": [
+        "generativelanguage.googleapis.com"
+      ],
+      "laneClis": [
+        "antigravity"
+      ],
       "residency": [
-        { "region": "global", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Generative Language API is a global endpoint; Vertex AI regional endpoints encode the region in the hostname." }
+        {
+          "region": "global",
+          "country": "US",
+          "default": true,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "Generative Language API is a global endpoint; Vertex AI regional endpoints encode the region in the hostname."
+        }
       ],
       "facilityAnchors": [],
       "status": "hypothesis",
@@ -49,11 +112,26 @@
       "key": "nvidia",
       "publisher": "NVIDIA",
       "legalEntity": "NVIDIA Corporation (US)",
-      "match": ["^nemotron", "^llama-3\\.1-nemotron", "^nvidia/"],
-      "apiHosts": ["integrate.api.nvidia.com"],
-      "laneClis": ["pi"],
+      "match": [
+        "^nemotron",
+        "^llama-3\\.1-nemotron",
+        "^nvidia/"
+      ],
+      "apiHosts": [
+        "integrate.api.nvidia.com"
+      ],
+      "laneClis": [
+        "pi"
+      ],
       "residency": [
-        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "NIM endpoints and DGX Cloud; the serving entity may be a cloud partner, so resolve the chain." }
+        {
+          "region": "US",
+          "country": "US",
+          "default": true,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "NIM endpoints and DGX Cloud; the serving entity may be a cloud partner, so resolve the chain."
+        }
       ],
       "facilityAnchors": [],
       "status": "hypothesis",
@@ -63,14 +141,34 @@
       "key": "xai",
       "publisher": "xAI",
       "legalEntity": "X.AI LLC (US)",
-      "match": ["^grok"],
-      "apiHosts": ["api.x.ai"],
-      "laneClis": ["grok"],
+      "match": [
+        "^grok"
+      ],
+      "apiHosts": [
+        "api.x.ai"
+      ],
+      "laneClis": [
+        "grok"
+      ],
       "residency": [
-        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "xAI operates its own training clusters; verify the current serving sites." }
+        {
+          "region": "US",
+          "country": "US",
+          "default": true,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "xAI operates its own training clusters; verify the current serving sites."
+        }
       ],
       "facilityAnchors": [
-        { "name": "Colossus (Memphis)", "city": "Memphis", "country": "US", "state": "Tennessee", "source": "public reporting (unverified for API serving)", "verifiedAt": null }
+        {
+          "name": "Colossus (Memphis)",
+          "city": "Memphis",
+          "country": "US",
+          "state": "Tennessee",
+          "source": "public reporting (unverified for API serving)",
+          "verifiedAt": null
+        }
       ],
       "status": "hypothesis",
       "notes": "Training campus is well reported; serving for the API is a separate question. Keep the two apart."
@@ -79,12 +177,34 @@
       "key": "deepseek",
       "publisher": "DeepSeek",
       "legalEntity": "Hangzhou DeepSeek Artificial Intelligence Co., Ltd. (CN)",
-      "match": ["^deepseek"],
-      "apiHosts": ["api.deepseek.com"],
-      "laneClis": ["dsh"],
+      "match": [
+        "^deepseek"
+      ],
+      "apiHosts": [
+        "api.deepseek.com"
+      ],
+      "laneClis": [
+        "dsh"
+      ],
       "residency": [
-        { "region": "CN", "country": "CN", "default": false, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Verify current processing and storage locations; the API is fronted by a global CDN." },
-        { "region": null, "country": "CN", "precision": "country", "default": true, "source": "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html", "quote": "To provide you with our services, we directly collect, process and store your Personal Data in People's Republic of China.", "verifiedAt": "2026-11-22", "note": "Consumer privacy policy (Last Update: Feb 10, 2026); the Open Platform policy URL returned 403." }
+        {
+          "region": "CN",
+          "country": "CN",
+          "default": false,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "Verify current processing and storage locations; the API is fronted by a global CDN."
+        },
+        {
+          "region": null,
+          "country": "CN",
+          "precision": "country",
+          "default": true,
+          "source": "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html",
+          "quote": "To provide you with our services, we directly collect, process and store your Personal Data in People's Republic of China.",
+          "verifiedAt": "2026-11-22",
+          "note": "Consumer privacy policy (Last Update: Feb 10, 2026); the Open Platform policy URL returned 403."
+        }
       ],
       "facilityAnchors": [],
       "status": "verified",
@@ -94,11 +214,25 @@
       "key": "minimax",
       "publisher": "MiniMax",
       "legalEntity": "MiniMax (CN) - confirm the contracting entity",
-      "match": ["^minimax", "^abab"],
-      "apiHosts": ["api.minimax.chat"],
-      "laneClis": ["opencode"],
+      "match": [
+        "^minimax",
+        "^abab"
+      ],
+      "apiHosts": [
+        "api.minimax.chat"
+      ],
+      "laneClis": [
+        "opencode"
+      ],
       "residency": [
-        { "region": "CN", "country": "CN", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "International endpoint may differ from the domestic one; check which host the CLI calls." }
+        {
+          "region": "CN",
+          "country": "CN",
+          "default": true,
+          "source": "provider documentation (to verify)",
+          "verifiedAt": null,
+          "note": "International endpoint may differ from the domestic one; check which host the CLI calls."
+        }
       ],
       "facilityAnchors": [],
       "status": "hypothesis",
@@ -108,11 +242,24 @@
       "key": "nous",
       "publisher": "Nous Research",
       "legalEntity": "Nous Research (US) - confirm",
-      "match": ["^hermes"],
-      "apiHosts": ["api.nousresearch.com"],
-      "laneClis": ["hermes"],
+      "match": [
+        "^hermes"
+      ],
+      "apiHosts": [
+        "api.nousresearch.com"
+      ],
+      "laneClis": [
+        "hermes"
+      ],
       "residency": [
-        { "region": "unknown", "country": null, "default": true, "source": "unverified", "verifiedAt": null, "note": "Open-weight models are usually served by a third-party inference host." }
+        {
+          "region": "unknown",
+          "country": null,
+          "default": true,
+          "source": "unverified",
+          "verifiedAt": null,
+          "note": "Open-weight models are usually served by a third-party inference host."
+        }
       ],
       "facilityAnchors": [],
       "status": "hypothesis",
@@ -122,9 +269,14 @@
       "key": "unresolved",
       "publisher": "UNRESOLVED",
       "legalEntity": null,
-      "match": ["^muse", "^jev"],
+      "match": [
+        "^muse",
+        "^jev"
+      ],
       "apiHosts": [],
-      "laneClis": ["muse"],
+      "laneClis": [
+        "muse"
+      ],
       "residency": [],
       "facilityAnchors": [],
       "status": "hypothesis",

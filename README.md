@@ -10,7 +10,7 @@ that re-derives the answer from live data does not.
 
 ```
 fleet-geo-mcp/
-  server.mjs              MCP stdio transport + 12 tools
+  server.mjs              MCP stdio transport + 13 tools
   src/tcpip.mjs           RFC 1792-modeled dual-stack TCP/UDP connection MIB & IPv4/IPv6 primitives
   src/geofeed.mjs         RFC 8805 self-published IP geolocation feeds + RFC 9092/9632 RDAP discovery
   src/native.mjs          optional Rust N-API loader with automatic pure-JS fallback
@@ -92,6 +92,7 @@ down the street as "the datacenter".
 |---|---|
 | `locate_model` | one lane: model / lane name / base_url -> full location card |
 | `fleet_status` | every lane in one sweep -> table + roll-up |
+| `fleet_map` | map-ready two-layer JSON feed (`EDGE` PoP pins + `ORIGIN` anchored pins + `unresolved`) for visualizers like `agent2mind` |
 | `trace_endpoint` | one hostname -> CNAME hops, ASN, cloud region, RDAP |
 | `lookup_prefix` | one IPv4 or IPv6 address -> ASN, published cloud region, RFC 8805 geofeed, PeeringDB facilities |
 | `lookup_geofeed` | query an operator's self-published RFC 8805 IP geofeed (discovered via RDAP, authority-verified) |

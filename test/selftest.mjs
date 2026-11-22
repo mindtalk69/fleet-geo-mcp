@@ -5,7 +5,7 @@ import { analyzeLatency, assemble, downgrade } from '../src/classify.mjs';
 import { isEntitled, loadCatalog, matchProvider, recordFact } from '../src/catalog.mjs';
 import { asnForIp, cloudRangeFor, runMeasurement } from '../src/sources.mjs';
 import { resolveHost } from '../src/doh.mjs';
-import { copyFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -213,13 +213,26 @@ await t('a cited fact outranks an unverified seed marked default', () => {
   eq(card.mapPins.origin.basis, 'provider-documented');
 });
 await t('recording a cited fact makes it the default over an unverified seed', () => {
+  // Use a synthetic unverified provider in tmpCat so verifying real providers in catalog.json never breaks this test.
+  const raw = JSON.parse(readFileSync(tmpCat, 'utf8'));
+  raw.providers.push({
+    key: 'seedtest',
+    publisher: 'SeedTest',
+    match: ['^seedtest'],
+    apiHosts: ['api.seedtest.example'],
+    laneClis: [],
+    residency: [{ region: 'US', country: 'US', default: true, source: 'unverified', verifiedAt: null }],
+    facilityAnchors: [],
+    status: 'hypothesis',
+  });
+  writeFileSync(tmpCat, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
   const r = recordFact(
-    { provider: 'openai', kind: 'residency', country: 'US', source_url: 'https://example.com/openai', quote: 'data is processed in the United States', verified_at: '2026-11-22' },
+    { provider: 'seedtest', kind: 'residency', country: 'US', source_url: 'https://example.com/seedtest', quote: 'data is processed in the United States', verified_at: '2026-11-22' },
     { catalogPath: tmpCat },
   );
   ok(r.ok, JSON.stringify(r));
   eq(r.recorded.default, true);
-  const p = JSON.parse(readFileSync(tmpCat, 'utf8')).providers.find((x) => x.key === 'openai');
+  const p = JSON.parse(readFileSync(tmpCat, 'utf8')).providers.find((x) => x.key === 'seedtest');
   ok(p.residency.filter((x) => x.default).length === 1, 'exactly one default');
 });
 await t('a bare API host matches its catalog provider', () => {
