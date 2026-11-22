@@ -29,8 +29,8 @@ export function loadConfig() {
   return configCache;
 }
 
-/** Match a model id or a lane/CLI name to a catalog provider. */
-export function matchProvider(catalog, { model, lane } = {}) {
+/** Match a model id, a lane/CLI name, or an API hostname to a catalog provider. */
+export function matchProvider(catalog, { model, lane, host } = {}) {
   const providers = catalog.providers ?? [];
   if (model) {
     const hit = providers.find((p) => p._re.some((re) => re.test(String(model))));
@@ -40,6 +40,13 @@ export function matchProvider(catalog, { model, lane } = {}) {
     const l = String(lane).toLowerCase();
     const hit = providers.find((p) => (p.laneClis ?? []).some((c) => c.toLowerCase() === l));
     if (hit) return { ...hit, matchedBy: 'lane' };
+  }
+  // A bare base URL (observe_endpoints, locate_model {base_url}) still carries the
+  // provider's documented facts when its host is one of that provider's API hosts.
+  if (host) {
+    const h = String(host).toLowerCase();
+    const hit = providers.find((p) => (p.apiHosts ?? []).some((a) => String(a).toLowerCase() === h));
+    if (hit) return { ...hit, matchedBy: 'host' };
   }
   return null;
 }
@@ -130,19 +137,27 @@ export function recordFact(input = {}, { catalogPath = CATALOG_PATH } = {}) {
 
   let fact;
   if (kind === 'residency') {
+    // A provider page often names only a country ("...in People's Republic of China").
+    // Record it at country precision rather than inventing a region.
     const region = String(input.region ?? '').trim();
-    if (!region) return { ok: false, error: 'INVALID_FACT', problems: ['residency requires region'] };
-    const country = String(input.country ?? '').trim().toUpperCase() || REGION_COUNTRY[region.toLowerCase()] || '';
+    const givenCountry = String(input.country ?? '').trim().toUpperCase();
+    if (!region && !/^[A-Z]{2}$/.test(givenCountry))
+      return { ok: false, error: 'INVALID_FACT', problems: ['residency requires region, or a 2-letter country for a country-level statement'] };
+    const country = givenCountry || REGION_COUNTRY[region.toLowerCase()] || '';
     fact = {
-      region,
+      region: region || null,
       country: country || null,
-      default: (provider.residency ?? []).length === 0,
+      precision: region ? 'region' : 'country',
+      // The first cited fact becomes the default, displacing any unverified seed.
+      default: !(provider.residency ?? []).some((r) => r.verifiedAt && r.default),
       source: sourceUrl,
       quote,
       verifiedAt,
       note: input.note ?? null,
     };
-    provider.residency = [...(provider.residency ?? []).filter((r) => !(r.region === region && r.source === sourceUrl)), fact];
+    const kept = (provider.residency ?? []).filter((r) => !(r.region === fact.region && r.country === fact.country && r.source === sourceUrl));
+    if (fact.default) for (const r of kept) if (!r.verifiedAt) r.default = false;
+    provider.residency = [...kept, fact];
   } else {
     const name = String(input.name ?? '').trim();
     const city = String(input.city ?? '').trim();

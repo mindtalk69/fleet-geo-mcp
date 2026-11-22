@@ -83,10 +83,11 @@
       "apiHosts": ["api.deepseek.com"],
       "laneClis": ["dsh"],
       "residency": [
-        { "region": "CN", "country": "CN", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Verify current processing and storage locations; the API is fronted by a global CDN." }
+        { "region": "CN", "country": "CN", "default": false, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Verify current processing and storage locations; the API is fronted by a global CDN." },
+        { "region": null, "country": "CN", "precision": "country", "default": true, "source": "https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html", "quote": "To provide you with our services, we directly collect, process and store your Personal Data in People's Republic of China.", "verifiedAt": "2026-11-22", "note": "Consumer privacy policy (Last Update: Feb 10, 2026); the Open Platform policy URL returned 403." }
       ],
       "facilityAnchors": [],
-      "status": "hypothesis",
+      "status": "verified",
       "notes": "Observed: api.deepseek.com CNAMEs to a CloudFront distribution. The CDN terminates TLS near the caller; the model does not run there."
     },
     {

@@ -183,21 +183,30 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
 
   /* ---- catalog (documentation) ---------------------------------------- */
   if (catalogFacts?.residency?.length) {
-    const r = catalogFacts.residency.find((x) => x.default) ?? catalogFacts.residency[0];
+    // A cited (verified) fact always outranks an unverified seed, whichever is marked default.
+    const facts = catalogFacts.residency;
+    const r = facts.find((x) => x.verifiedAt && x.default) ?? facts.find((x) => x.verifiedAt) ??
+      facts.find((x) => x.default) ?? facts[0];
+    const where = r.region ?? (r.country ? `country ${r.country}` : 'unspecified');
     if (r.verifiedAt) {
-      add('A', r.source ?? 'provider documentation', `documented residency: ${r.region}`, {
+      add('A', r.source ?? 'provider documentation', `documented residency: ${where}`, {
         country: r.country ?? null,
-        region: r.region,
+        region: r.region ?? null,
         plane: 'origin',
         anchor: 'provider-documented',
       });
-      if (!origin.region) {
+      if (r.region && !origin.region) {
         origin.region = r.region;
         origin.country = r.country ?? origin.country;
         origin.precision = 'region';
+      } else if (!r.region && r.country && !origin.region) {
+        // Country-level documentation: the precision says country, never more.
+        origin.country = r.country;
+        if (!['facility', 'city'].includes(origin.precision)) origin.precision = 'country';
       }
+      origin.documented = { source: r.source ?? null, quote: r.quote ?? null, verifiedAt: r.verifiedAt };
     } else {
-      add('D', 'catalog hypothesis (UNVERIFIED)', `claimed residency: ${r.region} - not verified against a source`, null);
+      add('D', 'catalog hypothesis (UNVERIFIED)', `claimed residency: ${where} - not verified against a source`, null);
       warnings.push(`Catalog residency for ${catalogFacts.publisher ?? 'this provider'} is unverified; it is a lead, not evidence.`);
     }
   }
@@ -248,6 +257,9 @@ export function assemble({ subject, chain, ipFacts = [], facilities = null, cata
         precision: origin.precision,
         confidence: state,
         source: anchors[0]?.source ?? votes[0]?.source ?? null,
+        // 'provider-documented' means the provider's own words, not a measurement.
+        basis: anchors[0]?.claims?.anchor ?? votes[0]?.claims?.anchor ?? null,
+        ...(origin.documented ? { quote: origin.documented.quote, verifiedAt: origin.documented.verifiedAt } : {}),
       }
     : null;
 

@@ -174,6 +174,59 @@ await t('unverified fact does NOT lift a card', () => {
   ok(card.confidence === 'OPEN', `expected OPEN, got ${card.confidence}`);
   ok(card.warnings.length > 0);
 });
+await t('record_fact accepts a country-only statement at country precision', () => {
+  const r = recordFact(
+    { provider: 'minimax', kind: 'residency', country: 'cn', source_url: 'https://example.com/privacy', quote: 'we process your data in the People\'s Republic of China', verified_at: '2026-11-22' },
+    { catalogPath: tmpCat },
+  );
+  ok(r.ok, JSON.stringify(r));
+  eq(r.recorded.region, null);
+  eq(r.recorded.country, 'CN');
+  eq(r.recorded.precision, 'country');
+  const bad = recordFact({ provider: 'minimax', kind: 'residency', country: 'China', source_url: 'https://example.com/p', quote: 'a quote that is long enough' }, { catalogPath: tmpCat });
+  eq(bad.ok, false, 'country must be a 2-letter code');
+});
+await t('country-only documented fact anchors at country precision with its quote', () => {
+  const card = assemble({
+    subject: { host: 'api.example.com' },
+    ipFacts: [],
+    catalogFacts: { publisher: 'X', residency: [{ region: null, country: 'CN', precision: 'country', default: true, source: 'https://example.com/privacy', quote: 'we process your data in China', verifiedAt: '2026-11-22' }] },
+  });
+  eq(card.confidence, 'ANCHORED');
+  eq(card.location.country, 'CN');
+  eq(card.location.region, null);
+  eq(card.location.precision, 'country');
+  eq(card.mapPins.origin.precision, 'country');
+  eq(card.mapPins.origin.basis, 'provider-documented');
+  eq(card.mapPins.origin.quote, 'we process your data in China');
+});
+await t('a cited fact outranks an unverified seed marked default', () => {
+  const card = assemble({
+    subject: { host: 'api.example.com' },
+    ipFacts: [],
+    catalogFacts: { publisher: 'X', residency: [
+      { region: 'CN', country: 'CN', default: true, source: 'provider documentation (to verify)', verifiedAt: null },
+      { region: null, country: 'CN', precision: 'country', default: false, source: 'https://example.com/privacy', quote: 'processed in China', verifiedAt: '2026-11-22' },
+    ] },
+  });
+  eq(card.confidence, 'ANCHORED');
+  eq(card.mapPins.origin.basis, 'provider-documented');
+});
+await t('recording a cited fact makes it the default over an unverified seed', () => {
+  const r = recordFact(
+    { provider: 'openai', kind: 'residency', country: 'US', source_url: 'https://example.com/openai', quote: 'data is processed in the United States', verified_at: '2026-11-22' },
+    { catalogPath: tmpCat },
+  );
+  ok(r.ok, JSON.stringify(r));
+  eq(r.recorded.default, true);
+  const p = JSON.parse(readFileSync(tmpCat, 'utf8')).providers.find((x) => x.key === 'openai');
+  ok(p.residency.filter((x) => x.default).length === 1, 'exactly one default');
+});
+await t('a bare API host matches its catalog provider', () => {
+  eq(matchProvider(catalog, { host: 'api.deepseek.com' })?.key, 'deepseek');
+  eq(matchProvider(catalog, { host: 'API.DEEPSEEK.COM' })?.matchedBy, 'host');
+  eq(matchProvider(catalog, { host: 'unknown.example.com' }), null);
+});
 
 console.log('--- online: live sources (tolerant) ---');
 let chain = null;

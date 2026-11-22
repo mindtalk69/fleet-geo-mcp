@@ -310,7 +310,7 @@ async function locateCore({ model = null, lane = null, baseUrl: explicitUrl = nu
     lane = fleetLane.cli;
     model = model ?? fleetLane.model ?? null;
   }
-  const provider = matchProvider(catalog, { model, lane });
+  const provider = matchProvider(catalog, { model, lane, host: explicitUrl ? hostOf(explicitUrl) : null });
   const baseUrl = explicitUrl ?? (provider?.apiHosts?.[0] ? `https://${provider.apiHosts[0]}` : null);
 
   if (!baseUrl) {

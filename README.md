@@ -131,6 +131,13 @@ RFC 8805 geofeed pin exists, that measured PoP becomes `mapPins.edge` (`precisio
 It is where TLS ends, near the caller, never the inference origin; `mapPins.origin` stays
 null until the origin is anchored.
 
+**Documented origins.** A provider page that names only a country is recorded at country
+precision: `record_fact {provider, kind:"residency", country:"CN", source_url, quote}`
+(no region needed; the precision says `country`, never more). A cited fact outranks any
+unverified seed, and a bare API host (`api.deepseek.com`) matches its catalog provider, so
+`observe_endpoints` evidence picks the fact up. `mapPins.origin` then carries the point,
+`basis: "provider-documented"` and the quote. Recorded so far: DeepSeek, processing in China.
+
 **Gateway follow.** Some CLIs never leave the machine themselves: `hermes` hands each
 request to its own daemon on `127.0.0.1:34101`. When a CLI connects to a loopback port,
 the tool finds the process listening there (never its own proxy) and records that
