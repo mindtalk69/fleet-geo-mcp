@@ -1,0 +1,8 @@
+# scratch and generated
+tmp/
+node_modules/
+*.log
+*.tmp
+catalog.json.tmp
+responses.jsonl
+*-responses.jsonl

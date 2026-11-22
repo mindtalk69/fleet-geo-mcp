@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "source": "orca-fleet-topology.svg (orca 1.4.237, Windows, local)",
+  "lanes": [
+    { "lane": "W1", "cli": "codex", "model": "gpt-6.1 sol", "role": "core implementation", "wt": "wt/core", "delivery": "argv" },
+    { "lane": "W2", "cli": "opencode", "model": "minimax-3.1", "role": "API & integration", "wt": "wt/api", "delivery": "flag-prompt" },
+    { "lane": "W3", "cli": "antigravity", "model": "gemini-3.8-flash", "role": "UI & frontend", "wt": "wt/ui", "note": "binary agy, not on PATH" },
+    { "lane": "W4", "cli": "pi", "model": "nemotron-ultra-550", "role": "tests & CI", "wt": "wt/tests", "note": "not on PATH" },
+    { "lane": "W5", "cli": "grok", "model": "grok 4.7", "role": "perf & refactor", "wt": "wt/perf" },
+    { "lane": "W6", "cli": "muse", "model": "muse wonder", "role": "docs & migration", "wt": "wt/docs" },
+    { "lane": "W7", "cli": "dsh", "model": "deepseek-flash-4.1-107", "role": "long-tail fixes", "wt": "wt/tail", "note": "binary dsh-tui" },
+    { "lane": "C", "cli": "claude", "model": "claude", "role": "coordinator: architect & run owner" },
+    { "lane": "B", "cli": "hermes", "model": "hermes", "role": "context broker: recall & spec lint" },
+    { "lane": "T", "cli": "jev", "model": "jev", "role": "triage & classify before Claude spends" }
+  ]
+}

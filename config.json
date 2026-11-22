@@ -1,0 +1,17 @@
+{
+  "entitledHosts": [
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.deepseek.com",
+    "api.x.ai",
+    "generativelanguage.googleapis.com",
+    "api.minimax.chat",
+    "integrate.api.nvidia.com",
+    "api.nousresearch.com",
+    "127.0.0.1",
+    "localhost"
+  ],
+  "allowAnyHost": false,
+  "maxRequestsPerSecondPerHost": 1,
+  "globalping": { "defaultLimit": 6, "maxLimit": 20 }
+}

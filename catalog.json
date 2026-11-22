@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "lastReviewed": "2026-11-22",
+  "staleAfterDays": 90,
+  "providers": [
+    {
+      "key": "openai",
+      "publisher": "OpenAI",
+      "legalEntity": "OpenAI (US entity) - confirm current contracting entity in your agreement",
+      "match": ["^gpt-", "^o[1-9](-|$)", "^chatgpt", "^codex", "^text-"],
+      "apiHosts": ["api.openai.com"],
+      "laneClis": ["codex"],
+      "residency": [
+        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "OpenAI offers EU data residency on some products; defaults are US." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "API is fronted by an edge network, so DNS alone will show a PoP. Region must come from documentation or from the customer's Azure deployment."
+    },
+    {
+      "key": "anthropic",
+      "publisher": "Anthropic",
+      "legalEntity": "Anthropic PBC (US)",
+      "match": ["^claude"],
+      "apiHosts": ["api.anthropic.com"],
+      "laneClis": [],
+      "residency": [
+        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Anthropic serves from cloud partner regions; check the current regions page." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "Runs on cloud partners (historically AWS), so the cloud region is the anchor - check whether the fleet calls the API directly or through Bedrock/Vertex."
+    },
+    {
+      "key": "google",
+      "publisher": "Google",
+      "legalEntity": "Google LLC / Google Ireland Ltd depending on contract",
+      "match": ["^gemini", "^gemma", "^palm"],
+      "apiHosts": ["generativelanguage.googleapis.com"],
+      "laneClis": ["antigravity"],
+      "residency": [
+        { "region": "global", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Generative Language API is a global endpoint; Vertex AI regional endpoints encode the region in the hostname." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "If the lane uses Vertex AI, the region is in the hostname (<region>-aiplatform.googleapis.com) and becomes an anchor."
+    },
+    {
+      "key": "nvidia",
+      "publisher": "NVIDIA",
+      "legalEntity": "NVIDIA Corporation (US)",
+      "match": ["^nemotron", "^llama-3\\.1-nemotron", "^nvidia/"],
+      "apiHosts": ["integrate.api.nvidia.com"],
+      "laneClis": ["pi"],
+      "residency": [
+        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "NIM endpoints and DGX Cloud; the serving entity may be a cloud partner, so resolve the chain." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "Open weights served by several parties. Publisher and serving entity are very likely different here - that gap is the answer."
+    },
+    {
+      "key": "xai",
+      "publisher": "xAI",
+      "legalEntity": "X.AI LLC (US)",
+      "match": ["^grok"],
+      "apiHosts": ["api.x.ai"],
+      "laneClis": ["grok"],
+      "residency": [
+        { "region": "US", "country": "US", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "xAI operates its own training clusters; verify the current serving sites." }
+      ],
+      "facilityAnchors": [
+        { "name": "Colossus (Memphis)", "city": "Memphis", "country": "US", "state": "Tennessee", "source": "public reporting (unverified for API serving)", "verifiedAt": null }
+      ],
+      "status": "hypothesis",
+      "notes": "Training campus is well reported; serving for the API is a separate question. Keep the two apart."
+    },
+    {
+      "key": "deepseek",
+      "publisher": "DeepSeek",
+      "legalEntity": "Hangzhou DeepSeek Artificial Intelligence Co., Ltd. (CN)",
+      "match": ["^deepseek"],
+      "apiHosts": ["api.deepseek.com"],
+      "laneClis": ["dsh"],
+      "residency": [
+        { "region": "CN", "country": "CN", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "Verify current processing and storage locations; the API is fronted by a global CDN." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "Observed: api.deepseek.com CNAMEs to a CloudFront distribution. The CDN terminates TLS near the caller; the model does not run there."
+    },
+    {
+      "key": "minimax",
+      "publisher": "MiniMax",
+      "legalEntity": "MiniMax (CN) - confirm the contracting entity",
+      "match": ["^minimax", "^abab"],
+      "apiHosts": ["api.minimax.chat"],
+      "laneClis": ["opencode"],
+      "residency": [
+        { "region": "CN", "country": "CN", "default": true, "source": "provider documentation (to verify)", "verifiedAt": null, "note": "International endpoint may differ from the domestic one; check which host the CLI calls." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "opencode is a tool, not a provider: resolve which base URL it is configured with before answering."
+    },
+    {
+      "key": "nous",
+      "publisher": "Nous Research",
+      "legalEntity": "Nous Research (US) - confirm",
+      "match": ["^hermes"],
+      "apiHosts": ["api.nousresearch.com"],
+      "laneClis": ["hermes"],
+      "residency": [
+        { "region": "unknown", "country": null, "default": true, "source": "unverified", "verifiedAt": null, "note": "Open-weight models are usually served by a third-party inference host." }
+      ],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "Almost certainly re-served. The serving entity, not the publisher, holds the location."
+    },
+    {
+      "key": "unresolved",
+      "publisher": "UNRESOLVED",
+      "legalEntity": null,
+      "match": ["^muse", "^jev"],
+      "apiHosts": [],
+      "laneClis": ["muse"],
+      "residency": [],
+      "facilityAnchors": [],
+      "status": "hypothesis",
+      "notes": "Publisher not identifiable from the model id. Resolve the CLI's base URL and the model's response metadata first; do not guess an author."
+    }
+  ]
+}

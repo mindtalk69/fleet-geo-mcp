@@ -1,0 +1,14 @@
+# Wires the fleet-geo MCP server into this DSH profile.
+# The server is a standalone stdio process living in this repo, so it can be
+# edited without reinstalling this bundle.
+- insert:
+    - id: fleet-geo-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: fleetgeo
+        transport: stdio
+        command: 'C:/Users/mwull/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node.exe'
+        args:
+          - 'C:/DEV/fleet-geo-mcp/server.mjs'
+        cwd: 'C:/DEV/fleet-geo-mcp'
+        failOnStartupError: false

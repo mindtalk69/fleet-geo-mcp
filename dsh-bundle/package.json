@@ -1,0 +1,8 @@
+{
+  "name": "@local/fleet-geo-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Evidence-first provider geolocation MCP for the Orca fleet.",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "files": ["cordis.patch.yml", "docs", "icon.svg"]
+}
