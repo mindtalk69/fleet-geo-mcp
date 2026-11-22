@@ -27,10 +27,14 @@ W4 pi/nemotron-ultra-550, W5 grok/grok 4.7, W6 muse/muse wonder, W7 dsh/deepseek
 plus C claude (coordinator), B hermes (context broker), T jev (triage).
 Lane ids are accepted directly: locate_model {"lane":"W7"}.
 
-STEP 1 - REAL ENDPOINTS (the tools cannot do this; you must)
+STEP 1 - REAL ENDPOINTS (config + live CONTROL-plane verification)
 For each lane, establish the base URL its CLI will actually call: the CLI's --help or
 config subcommand, its config file, and its documented env vars (OPENAI_BASE_URL,
 ANTHROPIC_BASE_URL, OPENCODE_*, GEMINI_*). Record the host and where you read it.
+  - When config is ambiguous or you need live proof of what a CLI actually connects to, use
+    mcp__fleetgeo__inspect_connections (passive, zero model calls) or
+    mcp__fleetgeo__observe_endpoints (plan first; run:true spends one model call per lane,
+    relocate:true re-classifies saved runs with zero model calls). Both settle CONTROL only.
   - A lane you cannot resolve has an UNKNOWN endpoint. That is a finding, not a failure:
     name the file or flag that is missing.
   - Never substitute the catalog's default host for a configured one. If a CLI points at
@@ -125,8 +129,9 @@ For a quick pass or a cheaper model — keeps the two moves that matter.
 Use the fleet-geo tools (mcp__fleetgeo__*) to find where each fleet lane's inference runs.
 Call explain_rules first; its four confidence words are the authoritative vocabulary.
 
-1. Find each CLI's real base URL from its --help, config file, or env. Never use the
-   catalog default without checking.
+1. Find each CLI's real base URL from its --help, config file, env, or live observation
+   (inspect_connections passively, or observe_endpoints). Never use the catalog default
+   without checking.
 2. fleet_status {"limit":10}. Treat it as triage, not an answer.
 3. For each OPEN lane: trace_endpoint the final chain host; find_regional_endpoints on the
    apex domain. A CDN PoP is never an origin - say OPEN if the origin is hidden.

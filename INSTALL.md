@@ -40,20 +40,37 @@ Append this to `%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`:
 taking the profile down. The backup of the pre-change file is
 `cordis.patch.yml.bak-fleetgeo`.
 
+## Optional: build the Rust N-API native core
+
+`fleet-geo-mcp` works out of the box with pure Node.js (zero `node_modules`). If Rust (`cargo`) is
+installed, you can optionally build the Encore-style native core for sub-millisecond kernel socket
+snapshots (no `ss`/`lsof`/`netstat`/PowerShell subprocesses) and a dual-stack LPM radix trie:
+
+```powershell
+cd <repo>
+npm run build:native   # writes native/fleet-geo-native.<platform>-<arch>.node
+```
+
+The server auto-loads the `.node` binary when present and falls back to pure JS otherwise (or when
+`FLEET_GEO_NATIVE=0` is set). `mcp__fleetgeo__explain_rules` reports `runtime.engine` (`rust-napi`
+vs `js-fallback`).
+
 ## Verify
 
 After the row mounts, the tools appear as `mcp__fleetgeo__*`:
 
-- `mcp__fleetgeo__explain_rules` — cheap, proves the connection.
+- `mcp__fleetgeo__explain_rules` — cheap, proves the connection and active runtime (`rust-napi` / `js-fallback`).
+- `mcp__fleetgeo__inspect_connections` with `{"locate": false}` — passive live RFC 1792 TCP/UDP socket MIB check.
 - `mcp__fleetgeo__fleet_status` with `{"limit": 4}` — the real test.
 
 Without DSH, prove the server standalone:
 
 ```powershell
 cd <repo>
-node server.mjs --selftest                                   # 41 checks
+npm test                                                     # selftest (44) + tcpip + observe + native
 node server.mjs --list-tools
 node server.mjs --tool locate_model --args '{"lane":"W7"}'
+node server.mjs --tool inspect_connections --args '{"locate":false}'
 node test/stdio-check.mjs                                    # protocol surface
 ```
 
