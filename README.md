@@ -145,3 +145,9 @@ node server.mjs --tool locate_model --args '{"lane":"W7"}'
 cmd /c "node server.mjs < test\fixtures\stdio-requests.jsonl > test\fixtures\stdio-responses.jsonl"
 node test/stdio-check.mjs
 ```
+
+## Companion
+
+[`docs/PROMPT.md`](docs/PROMPT.md) is the analyst prompt this server replaced: a static spec
+that rots the moment a provider changes. Kept as the design rationale - the four planes, the
+evidence ladder, the falsification pass - for when the tool's output needs arguing in prose.
